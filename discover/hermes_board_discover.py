@@ -71,10 +71,8 @@ def scan_processes():
         # 进程启动 ticks(field 22 = starttime,位于 comm ')' 之后)
         # /proc/<pid>/stat: pid (comm) state ppid ...;comm 可能含空格/括号,
         # 取最后一个 ')' 之后按空白切分 → tokens[0]=state(field3) ... tokens[19]=starttime(field22)
-        try:
-            after_rparen = stat.split(") ", 1)[1]
-        except IndexError:
-            after_rparen = stat.rsplit(")", 1)[-1] if ")" in stat else ""
+        # comm 字段允许包含空格和括号，必须从最后一个 ')' 之后解析。
+        after_rparen = stat.rsplit(")", 1)[-1] if ")" in stat else ""
         toks = after_rparen.split()
         try:
             start_ticks = int(toks[19])
@@ -435,42 +433,48 @@ def _prime_subagents():
                 sdir = os.path.join(pdir, sub)
                 if not os.path.isdir(sdir):
                     continue
-                for fn in sorted(os.listdir(sdir)):
-                    if not fn.endswith(".jsonl"):
-                        continue
-                    info = _parse_prime_session(os.path.join(sdir, fn))
-                    if not info["session_id"]:
-                        continue
-                    # 权威完成态: rlm-subagent.json 的 status
-                    meta_status = ""
-                    meta_path = os.path.join(sdir, "rlm-subagent.json")
-                    if os.path.isfile(meta_path):
-                        try:
-                            meta_status = (json.load(open(meta_path, encoding="utf-8", errors="replace"))
-                                           .get("status") or "")
-                        except Exception:
-                            pass
-                    # 归属的父 daemon pid: 从 lease 反查该父会话对应的 pid
-                    parent_pid = _prime_pid_for_session(parent)
-                    short = info["session_id"][-8:]
-                    # 状态归一: 已完成→done; 等待输入→waiting; 其余→running
-                    fin = (meta_status or info["task_state"]) in ("completed", "done", "success", "finished")
-                    if fin:
-                        status = "done"
-                    elif info["task_state"] in ("needs_input", "waiting", "awaiting"):
-                        status = "waiting"
-                    else:
-                        status = "running"
-                    out.append({
-                        "agent": f"prime-sub-{short}",
-                        "pid": parent_pid,
-                        "start": info["start"],
-                        "task": info["task"],
-                        "think": info["think"],
-                        "status": status,
-                        "task_state": info["task_state"],
-                        "last_hms": info["last_hms"],
-                    })
+                jsonl = [os.path.join(sdir, fn) for fn in os.listdir(sdir)
+                         if fn.endswith(".jsonl")]
+                if not jsonl:
+                    continue
+                # 一个 sub 目录可能有多份历史 JSONL，只取最新文件，避免同名卡互相覆盖。
+                session_file = max(jsonl, key=lambda p: os.path.getmtime(p))
+                info = _parse_prime_session(session_file)
+                if not info["session_id"]:
+                    continue
+                # 权威完成态: rlm-subagent.json 的 status
+                meta_status = ""
+                meta_path = os.path.join(sdir, "rlm-subagent.json")
+                if os.path.isfile(meta_path):
+                    try:
+                        with open(meta_path, encoding="utf-8", errors="replace") as fh:
+                            meta_status = (json.load(fh).get("status") or "")
+                    except Exception:
+                        pass
+                # 归属的父 daemon pid: 仅作为诊断信息保留，卡片本身使用虚拟 PID。
+                parent_pid = _prime_pid_for_session(parent)
+                short = info["session_id"][-8:]
+                # 状态归一: 已完成→done; 等待输入→waiting; 其余→running
+                meta_status = str(meta_status or "").strip().lower()
+                task_state = str(info["task_state"] or "").strip().lower()
+                fin = meta_status in ("completed", "done", "success", "finished") or \
+                    task_state in ("completed", "done", "success", "finished")
+                if fin:
+                    status = "done"
+                elif task_state in ("needs_input", "waiting", "awaiting"):
+                    status = "waiting"
+                else:
+                    status = "running"
+                out.append({
+                    "agent": f"prime-sub-{short}",
+                    "pid": parent_pid,
+                    "start": info["start"],
+                    "task": info["task"],
+                    "think": info["think"],
+                    "status": status,
+                    "task_state": task_state,
+                    "last_hms": info["last_hms"],
+                })
     except Exception:
         pass
     return out
@@ -505,9 +509,10 @@ def write_prime_subagent_cards():
     for s in _prime_subagents():
         base = os.path.join(OUT_DIR, s["agent"])
         now = time.time()
-        if s["pid"]:
-            with open(base + ".pid", "w") as f:
-                f.write(str(s["pid"]))
+        # 子 agent 没有可可靠关联的独立 OS PID，使用虚拟会话 PID 0，
+        # 不能再因为 lease 反查失败而整张卡消失。
+        with open(base + ".pid", "w") as f:
+            f.write("0")
         start_epoch = int(s["start"]) if s["start"] else int(now)
         with open(base + ".start", "w") as f:
             f.write(str(start_epoch))
@@ -541,11 +546,11 @@ def write_prime_subagent_cards():
 
 
 def _codex_think(limit=2):
-    """codex: 读 ~/.codex/sessions/2026/ 下最新 rollout JSONL 的 assistant 文本"""
+    """codex: 读 ~/.codex/sessions/ 下最新 rollout JSONL 的 assistant 文本"""
     import ast
     out = []
     try:
-        base = os.path.expanduser("~/.codex/sessions/2026")
+        base = os.path.expanduser("~/.codex/sessions")
         files = []
         for root, _, fns in os.walk(base):
             for fn in fns:
@@ -636,7 +641,7 @@ def _codex_rollout_for_cwd(cwd):
                 # 完全一致优先; 否则路径前缀匹配, 越深越优
                 if rpath == cwd:
                     score = 1000
-                elif cwd.startswith(rpath) or rpath.startswith(cwd):
+                elif cwd.startswith(rpath + os.sep) or rpath.startswith(cwd + os.sep):
                     score = min(len(rpath), len(cwd))
                 else:
                     continue
@@ -892,14 +897,14 @@ def write_process_cards(procs):
                 exec_ents = _codex_exec_think(pid, 5)
             with open(base + ".log", "w") as f:
                 if cls == "codex" and is_app_server and last_hms:
-                    # 服务端仍在活动: recent activity, status 用最近一批日志的最后一条目标
+                    # 先写启动兜底，再写真实活动；读取端取最后一条事件。
+                    f.write(f"{time.strftime('%H:%M:%S')}|launched|running|pid={pid} :: {cmd[:90]}\n")
                     act_msg = server_ents[0][1] if server_ents else "(server busy / no INFO log)"
                     f.write(f"{last_hms}|active|running|{act_msg[:130]}\n")
-                    f.write(f"{time.strftime('%H:%M:%S')}|launched|running|pid={pid} :: {cmd[:90]}\n")
                 elif cls == "codex" and exec_ents:
-                    # exec 会话: 用最近一条思维做活动事件
-                    f.write(f"{exec_ents[0][0]}|active|running|{exec_ents[0][1][:130]}\n")
+                    # exec 会话: 用最近一条思维做活动事件；它必须压过启动兜底事件。
                     f.write(f"{time.strftime('%H:%M:%S')}|launched|running|pid={pid} :: codex exec{(' · '+cmd.split('codex')[-1][:60]) if 'codex' in cmd else ''}\n")
+                    f.write(f"{exec_ents[0][0]}|active|running|{exec_ents[0][1][:130]}\n")
                 else:
                     ts = time.strftime("%H:%M:%S")
                     f.write(f"{ts}|launched|running|pid={pid} :: {cmd[:90]}\n")

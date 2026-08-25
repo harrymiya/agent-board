@@ -25,8 +25,10 @@ agentboard_server.py — 多 agent 协同实时看板 · 网页化后端(纯 std
 
 import argparse
 import base64
+import datetime as dt
 import hashlib
 import json
+import logging
 import os
 import re
 import socket
@@ -35,6 +37,8 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+log = logging.getLogger("agentboard")
 
 # ---- 轻量 WebSocket(纯 stdlib, RFC6455) ----
 WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
@@ -129,8 +133,8 @@ if not os.path.exists(DISCOVER_SCRIPT):
                                    "hermes_board_discover.py")
 
 # 与 agentboard.sh status_icon/status_of 对应的状态归类
-RUNNING_WORDS = ("done", "ok", "success", "complete", "completed",
-                 "running", "start", "started", "working")
+DONE_WORDS = ("done", "ok", "success", "complete", "completed", "finished")
+RUNNING_WORDS = ("running", "start", "started", "working", "active", "launched")
 ERROR_WORDS = ("error", "failed", "fail", "blocked", "stalled", "exited")
 THINK_WORDS = ("think", "thinking")
 WAIT_WORDS = ("waiting", "queued", "pending", "scheduled", "idle", "paused",
@@ -139,8 +143,8 @@ WAIT_WORDS = ("waiting", "queued", "pending", "scheduled", "idle", "paused",
 
 def classify(status):
     """把任意 status 归一化成 {shell, label, color-group} 用于前端配色"""
-    s = (status or "").lower()
-    if s in ("done", "completed", "complete", "success", "finished"):
+    s = str(status or "").strip().lower()
+    if s in DONE_WORDS:
         return {"group": "idle", "label": "DONE"}
     if s in RUNNING_WORDS:
         return {"group": "running", "label": "RUNNING"}
@@ -176,6 +180,20 @@ class BoardScanner:
         self.run = run or find_run(root)
         self.board_dir = os.path.join(self.root, self.run)
         os.makedirs(self.board_dir, exist_ok=True)
+        try:
+            self._hz = int(os.sysconf("SC_CLK_TCK"))
+        except (ValueError, OSError, AttributeError):
+            self._hz = 100
+        self._boot_time = self._read_boot_time()
+
+    @staticmethod
+    def _read_boot_time():
+        try:
+            with open("/proc/stat", encoding="ascii", errors="ignore") as fh:
+                m = re.search(r"^btime\s+(\d+)$", fh.read(), re.MULTILINE)
+                return int(m.group(1)) if m else None
+        except OSError:
+            return None
 
     # ---- 进程卡 ----
     def read_agent(self, agent):
@@ -222,20 +240,21 @@ class BoardScanner:
         try:
             pid = int(pidv)
         except ValueError:
-            pid = 0
-        # pid=0 的会话卡: 无真实进程, 视为存活且用 .start 算时长
-        alive = self._alive(pid) if pid else (pid == 0)
+            pid = None
+        start_epoch = self._read(startf).strip() if startf else ""
+        # pid=0 是发现层明确写入的“虚拟会话”，空/非法 pid 不再被当成虚拟会话。
+        virtual = pid == 0 and bool(start_epoch)
+        alive = virtual or (pid is not None and pid > 0 and self._alive(pid, start_epoch))
         if alive:
-            start_epoch = self._read(startf).strip() if startf else ""
             try:
                 dur = max(0, int(time.time()) - int(float(start_epoch)))
             except (ValueError, TypeError):
                 dur = None
             status = "running"
-        elif pid:
+        elif pid is not None and pid > 0:
             status = "exited"
         else:
-            status = "running"   # 无 pid 文件内容的兜底
+            status = "invalid"
 
         # 最后结构化事件
         last = self._last_event(logf, status, dur)
@@ -243,12 +262,14 @@ class BoardScanner:
         think = self._think(thinkf)
         # 卡片展示归类(与 bash cell_collect 一致): 运行中进程→running(除非最后事件是 done);
         # exited 未标记 done→error; 否则取最后事件状态
+        last_status = str(last["status"] or "").strip().lower()
         if status == "running":
-            disp = last["status"] if last["status"] in ("done", "ok", "success", "complete", "completed") else "running"
+            # 进程存活不等于任务正在运行，保留最后的等待/思考/错误/完成状态。
+            disp = last_status if last_status in DONE_WORDS + WAIT_WORDS + THINK_WORDS + ERROR_WORDS else "running"
         elif status in ("exited", "error"):
-            disp = last["status"] if last["status"] in ("done", "ok", "success", "complete", "completed") else "exited"
+            disp = last_status if last_status in DONE_WORDS else "exited"
         else:
-            disp = last["status"]
+            disp = "error"
         return {
             "agent": agent,
             "type": "proc",
@@ -270,12 +291,21 @@ class BoardScanner:
         except OSError:
             return ""
 
-    @staticmethod
-    def _alive(pid):
+    def _alive(self, pid, expected_start=""):
         try:
+            with open(f"/proc/{pid}/stat", encoding="utf-8", errors="replace") as fh:
+                stat = fh.read()
+            after = stat.rsplit(")", 1)[-1].split()
+            if not after or after[0] == "Z":
+                return False
+            if expected_start and self._boot_time is not None:
+                ticks = int(after[19])
+                actual = self._boot_time + ticks / self._hz
+                if abs(actual - float(expected_start)) > 2.0:
+                    return False
             os.kill(pid, 0)
             return True
-        except (OSError, ProcessLookupError):
+        except (OSError, ProcessLookupError, ValueError, IndexError):
             return False
 
     def _last_event(self, logf, status, dur):
@@ -288,11 +318,12 @@ class BoardScanner:
                 line = (line or "").strip()
             except OSError:
                 pass
-        ts, stage, st, msg = "", "-", "idle", ""
+        # 没有日志时，存活进程默认 RUNNING；不能用 idle，否则会被归为 WAITING。
+        ts, stage, st, msg = "", "-", ("running" if status == "running" else "idle"), ""
         if line:
             parts = line.split("|", 3)
             if len(parts) >= 3:
-                ts, stage, st = parts[0], parts[1], parts[2]
+                ts, stage, st = parts[0], parts[1], parts[2].strip().lower()
             msg = parts[3] if len(parts) == 4 else ""
             msg = msg.replace("\\|", "|")
         if status == "running" and st not in RUNNING_WORDS:
@@ -390,9 +421,10 @@ class BoardScanner:
         for c in active:
             if c.get("type") == "cron":
                 continue
-            if c.get("status") == "running":
+            group = c.get("cls", {}).get("group")
+            if group == "running":
                 nrt += 1
-            elif c.get("status") in ("exited", "error"):
+            elif group == "error":
                 nerr += 1
         return {"total": ntotal, "running": nrt, "error": nerr, "events": events}
 
@@ -410,6 +442,9 @@ class BoardStore:
         self._clients = []          # WebSocket 连接
         self._clients_lock = threading.Lock()
         self._refresh_lock = threading.Lock()
+        self.last_refresh = 0.0
+        self.last_discover = 0.0
+        self.last_error = ""
         self._last_sig = None       # 上次推送的数据签名(去重,避免无变化时也推送)
         self._refresh()
         self._last_sig = self._sig()
@@ -459,7 +494,7 @@ class BoardStore:
             if not os.path.isdir(d):
                 continue
             try:
-                for fn in os.listdir(d):
+                for fn in sorted(os.listdir(d)):
                     if fn.endswith(('.log', '.think', '.pid', '.cron')):
                         path = os.path.join(d, fn)
                         st = os.stat(path)
@@ -481,9 +516,52 @@ class BoardStore:
             for fn in os.listdir(dd):
                 if fn.endswith(".log"):
                     total += self._append_log(fn[:-4], os.path.join(dd, fn), ev)
-        ev.sort(key=lambda e: e["ts"], reverse=True)
+        # 手动目录与 discovered 目录可能同时留下同一条日志，去重后再排序。
+        unique = []
+        seen = set()
+        for item in ev:
+            key = (item["agent"], item["ts"], item["stage"], item["status"], item["msg"])
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(item)
+        ev = unique
+        # 以解析后的 epoch 排序；HH:MM:SS 字符串在跨午夜或混合 ISO 时间时不可靠。
+        ev.sort(key=lambda e: e.get("_epoch", float("-inf")), reverse=True)
         # 事件流只保留最新信息，避免把历史日志持续推送给前端。
+        for item in ev:
+            item.pop("_epoch", None)
         return ev[:12], total
+
+    @staticmethod
+    def _event_epoch(value):
+        raw = str(value or "").strip()
+        if not raw:
+            return None
+        try:
+            number = float(raw)
+            # 兼容毫秒 epoch。
+            return number / 1000 if number > 10_000_000_000 else number
+        except ValueError:
+            pass
+        try:
+            text = raw.replace("Z", "+00:00")
+            parsed = dt.datetime.fromisoformat(text)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=dt.timezone.utc)
+            return parsed.timestamp()
+        except ValueError:
+            pass
+        m = re.fullmatch(r"(\d{2}):(\d{2})(?::(\d{2}))?", raw)
+        if m:
+            now = dt.datetime.now().astimezone()
+            candidate = now.replace(hour=int(m.group(1)), minute=int(m.group(2)),
+                                    second=int(m.group(3) or 0), microsecond=0)
+            # 未来时间通常属于上一天，避免跨午夜时旧事件跑到最前。
+            if candidate.timestamp() > time.time() + 60:
+                candidate -= dt.timedelta(days=1)
+            return candidate.timestamp()
+        return None
 
     @staticmethod
     def _append_log(agent, path, ev):
@@ -494,13 +572,14 @@ class BoardStore:
                     ln = ln.rstrip("\n")
                     if not ln:
                         continue
-                    n += 1
                     parts = ln.split("|", 3)
                     if len(parts) < 3:
                         continue
+                    n += 1
                     ev.append({"agent": agent, "ts": parts[0], "stage": parts[1],
                                "status": parts[2], "cls": classify(parts[2]),
-                               "msg": parts[3].replace("\\|", "|") if len(parts) == 4 else ""})
+                               "msg": parts[3].replace("\\|", "|") if len(parts) == 4 else "",
+                               "_epoch": BoardStore._event_epoch(parts[0]) or float("-inf")})
         except OSError:
             pass
         return n
@@ -510,17 +589,22 @@ class BoardStore:
             self.agents = self.scanner.scan()
             self.events, self.total_events = self._collect_events()
             self.stats = self.scanner._stats(self.agents, self.total_events)
+            self.last_refresh = time.time()
 
     def data(self):
         return {"ts": int(time.time()), "run": self.scanner.run, "stats": self.stats,
-                "agents": self.agents, "events": self.events}
+                "agents": self.agents, "events": self.events,
+                "monitor": {"last_refresh": self.last_refresh,
+                             "last_discover": self.last_discover,
+                             "error": self.last_error}}
 
     def run_loop(self):
         # 每轮先跑一次自动发现(将 /proc + codex sqlite 的最新状态刷成 __discovered__/ 文件),
         # 再做内存快照 → 前端才能看到 agent 的实时活动(否则静态文件停留在上次 discover 的时刻)。
         # discover 负责把外部会话/进程/思维链物化成 __discovered__ 文件。
         # 卡片实时性取决于它的写入频率,因此默认跟随 5Hz 刷新节奏。
-        discover_span = max(0.2, self.interval)
+        # discover 会启动 Python 子进程并扫描多个数据库/JSONL，不需要 5Hz 重复执行。
+        discover_span = max(1.0, self.interval)
         last_disc = [0.0]
         stop = [False]
 
@@ -532,8 +616,9 @@ class BoardStore:
                     try:
                         with self._refresh_lock:
                             self._run_discover()
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        self.last_error = f"discover: {type(exc).__name__}: {exc}"
+                        log.exception("discover loop failed")
                 time.sleep(min(0.05, discover_span / 4))
 
         threading.Thread(target=_loop_discover, daemon=True).start()
@@ -546,8 +631,9 @@ class BoardStore:
                 if sig != self._last_sig:
                     self._last_sig = sig
                     self.broadcast()
-            except Exception:
-                pass
+            except Exception as exc:
+                self.last_error = f"refresh: {type(exc).__name__}: {exc}"
+                log.exception("refresh loop failed")
 
     def _run_discover(self):
         if not DISCOVER_SCRIPT or not os.path.exists(DISCOVER_SCRIPT):
@@ -557,9 +643,16 @@ class BoardStore:
         env.setdefault("AGENTBOARD_RUN", self.scanner.run)
         try:
             import subprocess
-            subprocess.run(["python3", DISCOVER_SCRIPT], env=env, capture_output=True, timeout=30)
-        except Exception:
-            pass
+            result = subprocess.run(["python3", DISCOVER_SCRIPT], env=env,
+                                    capture_output=True, text=True, timeout=30)
+            if result.returncode != 0:
+                detail = (result.stderr or result.stdout or "discover failed").strip()[-500:]
+                raise RuntimeError(detail)
+            self.last_discover = time.time()
+            self.last_error = ""
+        except Exception as exc:
+            self.last_error = f"discover: {type(exc).__name__}: {exc}"
+            log.warning("discover failed: %s", exc)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -637,6 +730,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     ap = argparse.ArgumentParser(description="agentboard web backend")
     ap.add_argument("--port", type=int, default=int(os.environ.get("AGENTBOARD_PORT", "8710")))
     ap.add_argument("--root", default=DEFAULT_ROOT)

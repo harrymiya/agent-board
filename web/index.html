@@ -153,13 +153,13 @@
   [data-theme="light"] .c-brand.b-prime{color:#6d28d9;background:#efe9fe;box-shadow:0 0 0 1px #efe9fe}
   [data-theme="light"] .c-brand{color:#484b4f!important;background:linear-gradient(#fff,#e7e7e4)!important}
   .c-name{font:650 13px/1.35 "SF Mono",ui-monospace,Menlo,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  /* 状态像设备指示灯：暗色铭牌 + 小范围自发光 */
+  /* 状态只保留单词和颜色，不使用徽章容器 */
   .c-badge{margin-left:auto;font:700 9.5px/1 "SF Mono",ui-monospace,Menlo,monospace;letter-spacing:.8px;
-           padding:5px 8px;border-radius:3px;background:rgba(0,0,0,.28);border:1px solid currentColor;text-shadow:none;box-shadow:inset 0 1px rgba(255,255,255,.05)}
-  .x-run .c-badge{color:var(--run);box-shadow:inset 0 1px rgba(255,255,255,.05),0 0 8px rgba(38,208,124,.14)}
-  .x-err .c-badge{color:var(--err);box-shadow:inset 0 1px rgba(255,255,255,.05),0 0 8px rgba(255,92,92,.16)}
-  .x-think .c-badge{color:var(--think);box-shadow:inset 0 1px rgba(255,255,255,.05),0 0 8px rgba(199,146,234,.14)}
-  .x-wait .c-badge{color:var(--wait);box-shadow:inset 0 1px rgba(255,255,255,.05),0 0 8px rgba(229,192,123,.14)}
+           padding:0;background:transparent;border:0;border-radius:0;text-shadow:none;box-shadow:none}
+  .x-run .c-badge{color:var(--run)}
+  .x-err .c-badge{color:var(--err)}
+  .x-think .c-badge{color:var(--think)}
+  .x-wait .c-badge{color:var(--wait)}
   .x-idle .c-badge{color:var(--idle)}
 
   .c-cmd{position:relative;z-index:1;display:block;color:var(--muted);font-size:11px;padding:0 12px 8px;
