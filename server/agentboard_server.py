@@ -480,7 +480,8 @@ class BoardStore:
                 if fn.endswith(".log"):
                     total += self._append_log(fn[:-4], os.path.join(dd, fn), ev)
         ev.sort(key=lambda e: e["ts"], reverse=True)
-        return ev[:50], total
+        # 事件流只保留最新信息，避免把历史日志持续推送给前端。
+        return ev[:12], total
 
     @staticmethod
     def _append_log(agent, path, ev):

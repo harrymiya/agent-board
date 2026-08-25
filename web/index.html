@@ -385,7 +385,9 @@ function _clearBody(){
 }
 function renderEvents(d){
   const l=document.getElementById('evList');
-  const html=(!d.events||!d.events.length)?'<div class="ev">— 暂无事件 —</div>':d.events.map(e=>`<div class="ev x-${cls(e)}">
+  // 事件流只展示最新信息，不把历史日志当作滚动内容保留在底部
+  const events=(d.events||[]).slice(0,12);
+  const html=!events.length?'<div class="ev">— 暂无事件 —</div>':events.map(e=>`<div class="ev x-${cls(e)}">
     <span class="e-ts">${esc(e.ts)}</span>
     <span class="e-ag">${esc(e.agent)}</span>
     <span class="e-ste">${esc(e.status)}</span>
