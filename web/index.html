@@ -21,13 +21,18 @@
     --bg-glow:#ffffff; --hdr-bg:rgba(255,255,255,.88); --card-b2:#f6f8fb;
   }
   *{box-sizing:border-box}
-  html,body{margin:0;height:100%}
+  *{scrollbar-width:thin;scrollbar-color:var(--muted) transparent}
+  *::-webkit-scrollbar{width:6px;height:6px}
+  *::-webkit-scrollbar-track{background:transparent}
+  *::-webkit-scrollbar-thumb{background:var(--muted);border-radius:6px}
+  *::-webkit-scrollbar-thumb:hover{background:var(--dim)}
+  html,body{margin:0;height:100%;overflow:hidden}
   body{
     background:radial-gradient(1200px 600px at 20% -10%, var(--bg-glow) 0%, var(--bg) 60%);
     color:var(--text); font:14px/1.5 "SF Mono",ui-monospace,Menlo,Consolas,monospace;
   }
   header{
-    position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:18px;flex-wrap:wrap;
+    height:58px;flex:none;display:flex;align-items:center;gap:18px;flex-wrap:wrap;
     padding:12px 22px;background:var(--hdr-bg);backdrop-filter:blur(6px);
     border-bottom:1px solid var(--border);
   }
@@ -44,15 +49,40 @@
     display:flex;align-items:center;justify-content:center;transition:background .2s}
   #themeBtn:hover{background:var(--border)}
 
-  /* 动态网格: 有几个 agent 就排几列, 自适应铺满 */
-  main{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));
-       gap:14px;padding:16px 22px 40px}
+  /* 页面自身不滚动，工作区和事件流各自滚动 */
+  .board-layout{height:calc(100vh - 58px);display:grid;grid-template-columns:minmax(0,1fr) 6px var(--done-width,270px);min-height:0}
+  .left-layout{min-width:0;min-height:0;display:flex;flex-direction:column}
+  main{height:calc(100% - var(--events-height, 230px) - 3px);min-height:150px;flex:none;display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));
+       align-content:start;gap:14px;padding:16px 22px;overflow:auto}
+
+  .done-panel{display:flex;flex-direction:column;border-left:1px solid var(--border);background:linear-gradient(180deg,rgba(74,168,255,.07),rgba(0,0,0,.08) 170px);min-height:0}
+  .panel-title{display:flex;align-items:center;gap:9px;padding:15px 16px 13px;color:var(--text);
+               font-size:11px;letter-spacing:1.3px;border-bottom:1px solid var(--border);flex:none}
+  .panel-title:before{content:'';width:7px;height:7px;border-radius:50%;background:var(--idle);box-shadow:0 0 8px color-mix(in srgb,var(--idle) 55%,transparent)}
+  .panel-title b{color:var(--text);font-size:11px;line-height:20px;min-width:22px;text-align:center;margin-left:auto;
+                 border:1px solid var(--border);border-radius:11px;background:var(--panel)}
+  #doneList{overflow:auto;padding:8px 10px 18px;min-height:0}
+  .done-row{position:relative;display:flex;align-items:center;gap:10px;min-height:42px;padding:8px 10px;
+            margin-bottom:4px;border:1px solid transparent;border-radius:7px;cursor:default}
+  .done-row:hover{background:var(--panel);border-color:var(--border);box-shadow:0 4px 14px rgba(0,0,0,.12)}
+  .done-mark{display:flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;
+             color:var(--bg);background:var(--idle);font:700 11px/1 sans-serif;flex:none}
+  .done-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;flex:1}
+  .done-time{color:var(--muted);font-size:10px;flex:none}
+  .empty-panel{color:var(--muted);font-size:12px;padding:22px 10px;line-height:1.7}
+
+  .splitter{flex:none;z-index:4;background:var(--border);position:relative}
+  .splitter:hover,.splitter.dragging{background:var(--acc)}
+  #hSplitter{height:3px;cursor:row-resize}
+  #vSplitter{width:6px;cursor:col-resize;background:transparent}
+  #hSplitter:after{content:'';position:absolute;left:50%;top:0;width:34px;height:2px;transform:translateX(-50%);border-radius:3px;background:var(--muted)}
+  #vSplitter:after{content:'';position:absolute;left:1px;top:50%;width:3px;height:34px;transform:translateY(-50%);border-radius:3px;background:var(--muted)}
 
   .card{
     background:linear-gradient(180deg,var(--panel),var(--card-b2));
     border:1px solid var(--border);border-radius:10px;
     overflow:hidden;display:flex;flex-direction:column;
-    min-height:190px;
+    min-height:200px;max-height:240px;
   }
   /* 卡片出现 / 消失 / 移动 的丝滑动效 */
   .card{transition:transform .45s cubic-bezier(.22,.8,.28,1),opacity .45s ease,
@@ -71,7 +101,7 @@
   .card.x-wait .c-head{background:linear-gradient(90deg,rgba(229,192,123,.15),transparent 65%)}
   .card.x-idle .c-head{background:transparent}
 
-  .c-head{display:flex;align-items:center;gap:9px;padding:10px 12px;border-bottom:1px solid var(--border)}
+  .c-head{display:flex;align-items:center;gap:9px;padding:10px 12px;border-bottom:1px solid var(--border);min-width:0}
   /* 印章式 agent 名牌: 矩形厚边框 + 品牌色半透明印 + 轻旋转 */
   .c-brand{flex:none;font-weight:800;font-size:11px;letter-spacing:1px;text-transform:uppercase;
            padding:2px 8px;border:1.5px solid currentColor;border-radius:3px;
@@ -99,9 +129,9 @@
   .x-idle .c-badge{background:var(--idle)}
 
   .c-cmd{display:block;color:var(--muted);font-size:11px;padding:0 12px 8px;
-         overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
+         overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%;flex:none}
 
-  .c-body{flex:1;display:flex;flex-direction:column;gap:4px;padding:2px 12px 12px}
+  .c-body{flex:1;min-height:0;display:flex;flex-direction:column;gap:4px;padding:2px 12px 12px;overflow:hidden}
   .think-line{display:flex;gap:7px;font-size:12px;color:var(--text)}
   .think-line .t-ts{color:var(--dim);flex:none;font-size:11px;min-width:36px}
   .think-line .t-txt{color:var(--text);overflow:hidden;display:-webkit-box;
@@ -109,19 +139,22 @@
         word-break:break-all}
   .x-think .t-txt{color:var(--think)}
   .c-empty{color:var(--muted);font-size:12px;padding:4px 0}
+  .c-body>.c-empty{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:none}
 
   .c-foot{margin-top:auto;display:flex;gap:12px;padding:8px 12px;border-top:1px solid var(--border);
-          color:var(--dim);font-size:11.5px;flex-wrap:wrap}
+          color:var(--dim);font-size:11.5px;flex-wrap:wrap;min-width:0;overflow:hidden;max-height:40px}
   .c-foot b{color:var(--text);font-weight:500}
 
   /* cron 特有 */
   .cron-row{display:flex;justify-content:space-between;font-size:12px;padding:2px 0;color:var(--text)}
   .cron-row .lab{color:var(--muted)}
-  .cron-err{color:var(--err);font-size:11.5px;margin-top:4px;word-break:break-all}
+  .cron-err{color:var(--err);font-size:11.5px;margin-top:4px;word-break:break-all;max-height:36px;overflow:hidden}
 
-  .events{margin:8px 22px 60px}
+  .events{height:var(--events-height, 230px);min-height:120px;display:flex;flex-direction:column;
+          margin:0;padding:8px 0 12px 22px;min-width:0}
   .events h2{font-size:13px;color:var(--dim);letter-spacing:1px;margin:0 0 10px;
              text-transform:uppercase;border-bottom:1px solid var(--border);padding-bottom:6px}
+  #evList{overflow:auto;min-height:0;min-width:0;padding-right:0;overscroll-behavior:contain}
   .ev{display:flex;gap:10px;padding:4px 0;font-size:12px;border-bottom:1px dashed var(--border)}
   .ev .e-ts{color:var(--muted);flex:none;width:54px}
   .ev .e-ag{color:var(--acc);flex:none;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -134,7 +167,18 @@
 
   .none{grid-column:1/-1;color:var(--muted);text-align:center;padding:40px;border:1px dashed var(--border);
         border-radius:10px}
-  @media(max-width:700px){main{grid-template-columns:1fr;padding:12px 12px 40px}}
+  .think-popover{position:fixed;z-index:20;display:none;width:min(560px,calc(100vw - 24px));max-height:min(360px,calc(100vh - 24px));
+                 overflow:auto;padding:11px 13px;background:var(--panel);border:1px solid var(--acc);border-radius:8px;
+                 box-shadow:0 12px 35px rgba(0,0,0,.35);pointer-events:none}
+  .think-popover.show{display:block}
+  .pop-title{color:var(--think);font-size:11px;margin-bottom:7px;letter-spacing:.5px}
+  .pop-line{display:flex;gap:8px;padding:2px 0;color:var(--text);font-size:11px;line-height:1.45}
+  .pop-ts{color:var(--dim);flex:none}
+  @media(max-width:700px){
+    .board-layout{grid-template-columns:minmax(0,1fr) 6px 190px}
+    main{grid-template-columns:1fr;padding:12px}
+    .events{padding-left:12px;padding-right:0}
+  }
 </style>
 </head>
 <body>
@@ -147,8 +191,16 @@
   <div class="right"><span id="runLabel">run=–</span><span id="clock">– –</span>
     <button id="themeBtn" type="button" title="切换深浅主题" aria-label="切换主题">🌙</button></div>
 </header>
-<main id="grid"></main>
-<div class="events"><h2>事件流</h2><div id="evList"></div></div>
+<div class="board-layout">
+  <div class="left-layout">
+    <main id="grid"></main>
+    <div id="hSplitter" class="splitter" role="separator" aria-label="调整事件流高度"></div>
+    <div class="events"><h2>事件流</h2><div id="evList"></div></div>
+  </div>
+  <div id="vSplitter" class="splitter" role="separator" aria-label="调整完成列表宽度"></div>
+  <aside class="done-panel"><div class="panel-title"><span>已完成 AGENT</span><b id="doneCount">0</b></div><div id="doneList"></div></aside>
+</div>
+<div id="thinkPopover" class="think-popover" aria-hidden="true"></div>
 
 <script>
 const grid=document.getElementById('grid');
@@ -226,7 +278,7 @@ function cardHTML(a){
   if(a.last&&a.last.stage)foot.push(`<span>阶段 <b>${esc(a.last.stage)}</b></span>`);
   if(a.last&&a.last.ts)foot.push(`<span>${esc(a.last.ts)}</span>`);
   const lastMsg=a.last&&a.last.msg?`<div class="c-empty">· ${esc(a.last.msg)}</div>`:'';
-  return `<section class="card x-${g}" data-agent="${esc(c)}">
+  return `<section class="card x-${g}" data-agent="${esc(c)}" data-think="${esc(JSON.stringify(a.think||[]))}">
     <div class="c-head">${brandHTML(c)}
       <span class="c-name" title="${esc(c)}">${esc(c)}</span>
       <span class="c-badge">${esc(a.cls&&a.cls.label||'IDLE')}</span></div>
@@ -239,13 +291,28 @@ function cardHTML(a){
   </section>`;
 }
 
+function isDone(a){return String(a.cls&&a.cls.label||'').toUpperCase()==='DONE';}
+function doneRowHTML(a){
+  const last=(a.think||[]).slice(-1)[0];
+  return `<div class="done-row" data-agent="${esc(a.agent)}" data-think="${esc(JSON.stringify(a.think||[]))}">
+    <span class="done-mark">✓</span><span class="done-name" title="${esc(a.agent)}">${esc(a.agent)}</span>
+    ${last&&last.ts?`<span class="done-time">${esc(last.ts)}</span>`:''}</div>`;
+}
+function renderDone(agents){
+  const done=agents.filter(isDone);
+  $('doneCount').textContent=done.length;
+  $('doneList').innerHTML=done.length?done.map(doneRowHTML).join(''):'<div class="empty-panel">暂无已完成 agent</div>';
+}
+
 function render(d){
   $('stTotal').textContent=d.stats.total;
   $('stRun').textContent=d.stats.running;
   $('stErr').textContent=d.stats.error;
   $('stEvents').textContent=d.stats.events;
   $('runLabel').textContent='run='+d.run;
-  if(!d.agents||!d.agents.length){
+  const active=(d.agents||[]).filter(a=>!isDone(a));
+  renderDone(d.agents||[]);
+  if(!active.length){
     _clearBody(); grid.innerHTML='<div class="none">当前没有活动的 agent —— 有则自动呈现</div>'; return;
   }
   // ── FLIP 增量更新: 卡片消失/出现/移动各自丝滑动效, 不整页重绘 ──
@@ -253,7 +320,7 @@ function render(d){
   grid.querySelectorAll('.card').forEach(el=>prev.set(el.dataset.agent, el));
   const oldRects = new Map();
   [...prev.values()].forEach(el=>oldRects.set(el.dataset.agent, el.getBoundingClientRect()));
-  const newSet = new Set(d.agents.map(a=>a.agent));
+  const newSet = new Set(active.map(a=>a.agent));
 
   // 1) 消失的卡: 保留在原位播放退场动效, 动画结束后自移除
   prev.forEach((el,id)=>{ if(!newSet.has(id)){
@@ -265,7 +332,7 @@ function render(d){
   }});
 
   // 2) 按最新顺序重排: appendChild 移动/插入, 不触发整车重绘
-  d.agents.forEach(a=>{
+  active.forEach(a=>{
     let el = prev.get(a.agent);
     const sig = _sig(a);
     if(el && !el.classList.contains('leaving')){
@@ -318,13 +385,45 @@ function _clearBody(){
 }
 function renderEvents(d){
   const l=document.getElementById('evList');
-  if(!d.events||!d.events.length){l.innerHTML='<div class="ev">— 暂无事件 —</div>';return;}
-  l.innerHTML=d.events.map(e=>`<div class="ev x-${cls(e)}">
+  const html=(!d.events||!d.events.length)?'<div class="ev">— 暂无事件 —</div>':d.events.map(e=>`<div class="ev x-${cls(e)}">
     <span class="e-ts">${esc(e.ts)}</span>
     <span class="e-ag">${esc(e.agent)}</span>
     <span class="e-ste">${esc(e.status)}</span>
     <span class="e-ms">${esc(e.msg)}</span></div>`).join('');
+  /* 最新事件在顶部，刷新时回到顶部，避免旧的滚动位置露出残留行 */
+  l.innerHTML=html;
+  l.scrollTop=0;
 }
+/* 页面级思维链浮层：滚动卡片区时也不会被容器裁掉 */
+const thinkPopover=$('thinkPopover');
+function showThink(el){
+  let items=[];try{items=JSON.parse(el.dataset.think||'[]');}catch(_){}
+  if(!items.length){thinkPopover.classList.remove('show');return;}
+  const recent=items.slice(-40);
+  thinkPopover.innerHTML='<div class="pop-title">最近完整思维链 · '+esc(el.dataset.agent||'')+'</div>'+recent.map(t=>
+    `<div class="pop-line"><span class="pop-ts">${esc(t.ts||'')}</span><span>${esc(t.text||'')}</span></div>`).join('');
+  thinkPopover.classList.add('show');thinkPopover.setAttribute('aria-hidden','false');
+  const r=el.getBoundingClientRect(),p=thinkPopover.getBoundingClientRect(),gap=8;
+  let left=Math.min(Math.max(12,r.left),window.innerWidth-p.width-12),top=r.bottom+gap;
+  if(top+p.height>window.innerHeight-12)top=Math.max(12,r.top-p.height-gap);
+  thinkPopover.style.left=left+'px';thinkPopover.style.top=top+'px';
+}
+function hideThink(){thinkPopover.classList.remove('show');thinkPopover.setAttribute('aria-hidden','true');}
+document.addEventListener('mouseover',e=>{const el=e.target.closest('.card,.done-row');if(el)showThink(el);});
+document.addEventListener('mouseout',e=>{const from=e.target.closest('.card,.done-row'),to=e.relatedTarget&&e.relatedTarget.closest&&e.relatedTarget.closest('.card,.done-row');if(from&&!to)hideThink();});
+
+/* 两条分隔线都支持拖拽 */
+const rootStyle=document.documentElement.style;
+function setupSplitters(){
+  const hs=$('hSplitter'),vs=$('vSplitter');let drag=null;
+  const begin=(type,e)=>{drag={type,start:type==='h'?e.clientY:e.clientX,base:parseFloat(getComputedStyle(document.documentElement).getPropertyValue(type==='h'?'--events-height':'--done-width'))||(type==='h'?230:270)};(type==='h'?hs:vs).classList.add('dragging');document.body.style.userSelect='none';e.preventDefault();};
+  hs.addEventListener('pointerdown',e=>{hs.setPointerCapture(e.pointerId);begin('h',e);});
+  vs.addEventListener('pointerdown',e=>{vs.setPointerCapture(e.pointerId);begin('v',e);});
+  window.addEventListener('pointermove',e=>{if(!drag)return;if(drag.type==='h')rootStyle.setProperty('--events-height',Math.max(120,Math.min(window.innerHeight-210,drag.base+drag.start-e.clientY))+'px');else rootStyle.setProperty('--done-width',Math.max(190,Math.min(window.innerWidth*.45,drag.base+drag.start-e.clientX))+'px');});
+  window.addEventListener('pointerup',()=>{if(!drag)return;hs.classList.remove('dragging');vs.classList.remove('dragging');document.body.style.userSelect='';drag=null;});
+}
+setupSplitters();
+
 function tickClock(){const n=new Date();$('clock').textContent=
   String(n.getHours()).padStart(2,'0')+':'+String(n.getMinutes()).padStart(2,'0')+':'+String(n.getSeconds()).padStart(2,'0');}
 
