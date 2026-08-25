@@ -30,6 +30,8 @@ RUN = os.environ.get("AGENTBOARD_RUN", time.strftime("%Y%m%d"))
 OUT_DIR = os.path.join(BOARD_ROOT, RUN, "__discovered__")
 
 CRON_JSON = os.path.expanduser("~/.hermes/cron/jobs.json")
+CODEX_LOG_DB = os.path.expanduser("~/.codex/logs_2.sqlite")
+CODEX_ACTIVE_WINDOW = 15.0
 
 # 时钟 HZ(通常 100)
 try:
@@ -345,6 +347,36 @@ def _prime_session_for_pid(pid):
         return os.path.expanduser(picks[0][2])
     except Exception:
         return None
+
+
+def _prime_process_status(pid):
+    """读取 prime worker 对应会话的权威 taskState；worker 存活本身不代表任务运行。"""
+    path = _prime_session_for_pid(pid)
+    if not path or not os.path.isfile(path):
+        return "idle"
+    task_state = ""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                try:
+                    event = json.loads(line)
+                except Exception:
+                    continue
+                if event.get("type") == "agent_status":
+                    state = (event.get("status") or {}).get("taskState")
+                    if state:
+                        task_state = str(state).strip().lower()
+    except OSError:
+        return "idle"
+    if task_state in ("completed", "done", "success", "finished"):
+        return "done"
+    if task_state in ("needs_input", "waiting", "awaiting", "blocked_on", "on_hold"):
+        return "waiting"
+    if task_state in ("thinking", "think"):
+        return "thinking"
+    if task_state in ("running", "working", "active", "started"):
+        return "running"
+    return "idle"
 
 
 def _parse_prime_session(path):
@@ -707,22 +739,27 @@ def _codex_server_activity(pid=None, limit=2):
     """codex app-server(常驻服务): 读 ~/.codex/logs_2.sqlite 的 logs 表, 取最新活动时间 + 有内容的日志行.
 
     普通 codex rollout 会话没有 logs_2.sqlite 写入时返回空; 存在则说明是常驻 app-server.
-    返回 (last_hms, [(hms, text)...]) —— last_hms 用于刷新卡片 .log 的"最后事件时间",
-    think 条目填最近有实质性内容的日志行, 让看板卡片能实时反映这个服务的活动.
+    返回 (last_hms, [(hms, text)...], active)。process_uuid 包含真实 PID，必须按 PID
+    隔离查询，不能把一个 app-server 的活动复制到所有 app-server 卡片上。
     """
-    db = os.path.expanduser("~/.codex/logs_2.sqlite")
+    db = CODEX_LOG_DB
     if not os.path.exists(db):
-        return None, []
+        return None, [], False
     try:
         import sqlite3
         con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=2)
         cur = con.cursor()
-        # 最新活动时间(整表最大 ts)
-        row = cur.execute("SELECT MAX(ts) FROM logs").fetchone()
+        process_pattern = f"pid:{int(pid)}:%" if pid is not None else "%"
+        # 最新活动时间必须属于当前进程，不能使用整表最大值。
+        row = cur.execute(
+            "SELECT MAX(ts) FROM logs WHERE process_uuid LIKE ?", (process_pattern,)
+        ).fetchone()
         last_hms = None
+        last_epoch = None
         if row and row[0]:
             try:
-                last_hms = time.strftime("%H:%M:%S", time.localtime(float(row[0])))
+                last_epoch = float(row[0])
+                last_hms = time.strftime("%H:%M:%S", time.localtime(last_epoch))
             except Exception:
                 last_hms = None
         # 最近有实质内容的 INFO/非遥测日志行作为思维/事件
@@ -734,7 +771,9 @@ def _codex_server_activity(pid=None, limit=2):
                 "  AND trim(feedback_log_body) != '' "
                 "  AND target NOT LIKE '%otel%' AND target NOT LIKE '%feedback_tags%' "
                 "  AND target NOT LIKE '%custom_ca%' "
-                "ORDER BY ts DESC LIMIT 20"
+                "  AND process_uuid LIKE ? "
+                "ORDER BY ts DESC LIMIT 20",
+                (process_pattern,),
             ).fetchall()
         except Exception:
             rows = []
@@ -759,8 +798,9 @@ def _codex_server_activity(pid=None, limit=2):
             if len(items) >= limit:
                 break
     except Exception:
-        return None, []
-    return last_hms, items
+        return None, [], False
+    active = last_epoch is not None and time.time() - last_epoch <= CODEX_ACTIVE_WINDOW
+    return last_hms, items, active
 
 
 def _opencode_think(pid, limit=2):
@@ -891,20 +931,27 @@ def write_process_cards(procs):
             last_hms = None
             server_ents = []
             exec_ents = []
+            server_active = False
             if cls == "codex" and is_app_server:
-                last_hms, server_ents = _codex_server_activity(pid, 3)
+                last_hms, server_ents, server_active = _codex_server_activity(pid, 3)
             elif cls == "codex":
                 exec_ents = _codex_exec_think(pid, 5)
             with open(base + ".log", "w") as f:
-                if cls == "codex" and is_app_server and last_hms:
-                    # 先写启动兜底，再写真实活动；读取端取最后一条事件。
-                    f.write(f"{time.strftime('%H:%M:%S')}|launched|running|pid={pid} :: {cmd[:90]}\n")
-                    act_msg = server_ents[0][1] if server_ents else "(server busy / no INFO log)"
-                    f.write(f"{last_hms}|active|running|{act_msg[:130]}\n")
+                if cls == "codex" and is_app_server:
+                    # app-server 是常驻服务：进程存在不代表有任务，近期无本进程日志即 IDLE。
+                    status_word = "running" if server_active else "idle"
+                    f.write(f"{time.strftime('%H:%M:%S')}|launched|{status_word}|pid={pid} :: {cmd[:90]}\n")
+                    if last_hms:
+                        act_msg = server_ents[0][1] if server_ents else "(no recent INFO log)"
+                        f.write(f"{last_hms}|active|{status_word}|{act_msg[:130]}\n")
                 elif cls == "codex" and exec_ents:
                     # exec 会话: 用最近一条思维做活动事件；它必须压过启动兜底事件。
                     f.write(f"{time.strftime('%H:%M:%S')}|launched|running|pid={pid} :: codex exec{(' · '+cmd.split('codex')[-1][:60]) if 'codex' in cmd else ''}\n")
                     f.write(f"{exec_ents[0][0]}|active|running|{exec_ents[0][1][:130]}\n")
+                elif cls == "prime":
+                    # prime-agent 是常驻 worker，状态取会话内权威 taskState，而不是文件 mtime。
+                    status_word = _prime_process_status(pid)
+                    f.write(f"{time.strftime('%H:%M:%S')}|launched|{status_word}|pid={pid} :: {cmd[:90]}\n")
                 else:
                     ts = time.strftime("%H:%M:%S")
                     f.write(f"{ts}|launched|running|pid={pid} :: {cmd[:90]}\n")

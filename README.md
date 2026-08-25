@@ -101,9 +101,10 @@ AGENTBOARD_ROOT=~/.hermes/agent-board python3 discover/hermes_board_discover.py
 | **ERROR** (红) | 出错 / 已退出 | `error, failed, blocked, exited...` |
 | **THINKING** (紫) | 思考中 | `think, thinking` |
 | **WAITING** (黄) | 等待输入 / 阻塞 | `waiting, needs_input, pending, queued...` |
-| **IDLE** (灰) | 空闲 / 其它 | 以上均不匹配的兜底 |
+| **IDLE** (灰) | 进程/服务存活，但当前没有任务 | `idle, inactive, sleeping, standby` |
 
-进程**存活**时为 RUNNING（除非最后事件是等待/思考/错误/完成等更细子状态）；
+进程**存活**不等于任务运行中：常驻服务无近期活动为 IDLE；任务事件为
+RUNNING / WAITING / THINKING / DONE / ERROR 时保留真实任务态；
 进程**退出**且未标记完成 → ERROR。
 
 ---

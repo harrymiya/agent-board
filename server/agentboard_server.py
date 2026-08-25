@@ -137,8 +137,11 @@ DONE_WORDS = ("done", "ok", "success", "complete", "completed", "finished")
 RUNNING_WORDS = ("running", "start", "started", "working", "active", "launched")
 ERROR_WORDS = ("error", "failed", "fail", "blocked", "stalled", "exited")
 THINK_WORDS = ("think", "thinking")
-WAIT_WORDS = ("waiting", "queued", "pending", "scheduled", "idle", "paused",
+WAIT_WORDS = ("waiting", "queued", "pending", "scheduled", "paused",
               "needs_input", "awaiting", "reviewing", "blocked_on", "on_hold")
+IDLE_WORDS = ("idle", "inactive", "sleeping", "standby")
+KNOWN_STATUS_WORDS = (DONE_WORDS + RUNNING_WORDS + ERROR_WORDS + THINK_WORDS +
+                      WAIT_WORDS + IDLE_WORDS)
 
 
 def classify(status):
@@ -154,6 +157,8 @@ def classify(status):
         return {"group": "thinking", "label": "THINKING"}
     if s in WAIT_WORDS:
         return {"group": "waiting", "label": "WAITING"}
+    if s in IDLE_WORDS:
+        return {"group": "idle", "label": "IDLE"}
     return {"group": "idle", "label": (status or "IDLE").upper()}
 
 
@@ -264,8 +269,8 @@ class BoardScanner:
         # exited 未标记 done→error; 否则取最后事件状态
         last_status = str(last["status"] or "").strip().lower()
         if status == "running":
-            # 进程存活不等于任务正在运行，保留最后的等待/思考/错误/完成状态。
-            disp = last_status if last_status in DONE_WORDS + WAIT_WORDS + THINK_WORDS + ERROR_WORDS else "running"
+            # 进程存活不等于任务正在运行；所有已知任务态使用统一集合原样保留。
+            disp = last_status if last_status in KNOWN_STATUS_WORDS else "running"
         elif status in ("exited", "error"):
             disp = last_status if last_status in DONE_WORDS else "exited"
         else:
@@ -326,10 +331,10 @@ class BoardScanner:
                 ts, stage, st = parts[0], parts[1], parts[2].strip().lower()
             msg = parts[3] if len(parts) == 4 else ""
             msg = msg.replace("\\|", "|")
-        if status == "running" and st not in RUNNING_WORDS:
-            # 保留更细的子状态(等待/思考/错误), 否则仅当完全无信息时兜底为 running
-            if st not in WAIT_WORDS and st not in THINK_WORDS and st not in ERROR_WORDS:
-                st = "running"
+        if status == "running" and st not in KNOWN_STATUS_WORDS:
+            # PID 存活只描述进程生命周期，不能覆盖任务层的完成/等待/思考/错误状态。
+            # 仅当发现层没有提供可识别的任务状态时，才回退为 running。
+            st = "running"
         return {"ts": ts, "stage": stage, "status": st, "cls": classify(st), "msg": msg, "dur": dur}
 
     def _cron_card(self, agent, cronf, thinkf):
