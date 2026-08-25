@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Board · 实时监控</title>
+<style>
+  :root{
+    --bg:#0b0e14; --panel:#131722; --border:#232a3b; --text:#d7dde8;
+    --dim:#7a8499; --muted:#4a5266;
+    --run:#26d07c; --err:#ff5c5c; --think:#c792ea; --wait:#e5c07b;
+    --idle:#8a94a8; --acc:#4aa8ff;
+    --bg-glow:#141a2a; --hdr-bg:rgba(11,14,20,.85); --card-b2:#10141d;
+  }
+  /* 浅色主题 */
+  [data-theme="light"]{
+    --bg:#eef2f7; --panel:#ffffff; --border:#d4dbe6; --text:#1f2937;
+    --dim:#5b6675; --muted:#8b95a5;
+    --run:#0f9d58; --err:#e03535; --think:#8b5cf6; --wait:#c77d0a;
+    --idle:#8290a3; --acc:#1f6feb;
+    --bg-glow:#ffffff; --hdr-bg:rgba(255,255,255,.88); --card-b2:#f6f8fb;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{
+    background:radial-gradient(1200px 600px at 20% -10%, var(--bg-glow) 0%, var(--bg) 60%);
+    color:var(--text); font:14px/1.5 "SF Mono",ui-monospace,Menlo,Consolas,monospace;
+  }
+  header{
+    position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:18px;flex-wrap:wrap;
+    padding:12px 22px;background:var(--hdr-bg);backdrop-filter:blur(6px);
+    border-bottom:1px solid var(--border);
+  }
+  header h1{font-size:17px;margin:0;letter-spacing:.5px}
+  .dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:7px}
+  .stat{display:flex;align-items:center;gap:6px;color:var(--dim);font-size:13px}
+  .stat b{color:var(--text);font-weight:600}
+  .s-run b{color:var(--run)} .s-err b{color:var(--err)}
+  .s-total b{color:var(--acc)}
+  .right{margin-left:auto;color:var(--muted);font-size:12px;display:flex;gap:14px;align-items:center}
+  .live{color:var(--run)} .live.off{color:var(--muted)}
+  #themeBtn{margin-left:6px;width:30px;height:30px;border-radius:8px;border:1px solid var(--border);
+    background:var(--panel);color:var(--text);font-size:15px;cursor:pointer;line-height:1;
+    display:flex;align-items:center;justify-content:center;transition:background .2s}
+  #themeBtn:hover{background:var(--border)}
+
+  /* 动态网格: 有几个 agent 就排几列, 自适应铺满 */
+  main{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));
+       gap:14px;padding:16px 22px 40px}
+
+  .card{
+    background:linear-gradient(180deg,var(--panel),var(--card-b2));
+    border:1px solid var(--border);border-radius:10px;
+    overflow:hidden;display:flex;flex-direction:column;
+    min-height:190px;
+  }
+  /* 卡片出现 / 消失 / 移动 的丝滑动效 */
+  .card{transition:transform .45s cubic-bezier(.22,.8,.28,1),opacity .45s ease,
+                    box-shadow .3s ease;will-change:transform,opacity}
+  .card.enter{animation:cardIn .45s cubic-bezier(.22,.8,.28,1)}
+  .card.leaving{pointer-events:none;opacity:0;transform:scale(.86) translateY(8px);
+                transition:opacity .28s ease,transform .28s ease}
+  @keyframes cardIn{
+    from{opacity:0;transform:translateY(14px) scale(.96)}
+    to  {opacity:1;transform:translateY(0)   scale(1)}
+  }
+  /* 状态仅通过头部底色淡染区分(不再给卡片底边/彩色边框) */
+  .card.x-run .c-head{background:linear-gradient(90deg,rgba(38,208,124,.16),transparent 65%)}
+  .card.x-err .c-head{background:linear-gradient(90deg,rgba(255,92,92,.20),transparent 65%)}
+  .card.x-think .c-head{background:linear-gradient(90deg,rgba(199,146,234,.16),transparent 65%)}
+  .card.x-wait .c-head{background:linear-gradient(90deg,rgba(229,192,123,.15),transparent 65%)}
+  .card.x-idle .c-head{background:transparent}
+
+  .c-head{display:flex;align-items:center;gap:9px;padding:10px 12px;border-bottom:1px solid var(--border)}
+  /* 印章式 agent 名牌: 矩形厚边框 + 品牌色半透明印 + 轻旋转 */
+  .c-brand{flex:none;font-weight:800;font-size:11px;letter-spacing:1px;text-transform:uppercase;
+           padding:2px 8px;border:1.5px solid currentColor;border-radius:3px;
+           transform:rotate(-3deg);line-height:1.35;font-family:ui-monospace,Menlo,Consolas,monospace}
+  .c-brand.b-hermes{color:#9d7bff;background:rgba(124,58,237,.18);box-shadow:0 0 0 1px rgba(124,58,237,.18)}
+
+  .c-brand.b-opencode{color:#3fe08c;background:rgba(38,208,124,.14);box-shadow:0 0 0 1px rgba(38,208,124,.14)}
+  .c-brand.b-codex{color:#f0a84e;background:rgba(217,119,6,.16);box-shadow:0 0 0 1px rgba(217,119,6,.16)}
+  .c-brand.b-pi{color:#56c8e6;background:rgba(14,116,144,.20);box-shadow:0 0 0 1px rgba(14,116,144,.20)}
+  .c-brand.b-prime{color:#c9a2ff;background:rgba(129,61,206,.20);box-shadow:0 0 0 1px rgba(129,61,206,.20)}
+  .c-brand.b-other{color:var(--dim);background:var(--border);box-shadow:0 0 0 1px var(--border)}
+  [data-theme="light"] .c-brand.b-hermes{color:#6b3fe0;background:#ede7ff;box-shadow:0 0 0 1px #ede7ff}
+  [data-theme="light"] .c-brand.b-opencode{color:#0f9d58;background:#dff7e9;box-shadow:0 0 0 1px #dff7e9}
+  [data-theme="light"] .c-brand.b-codex{color:#b45309;background:#fdeeda;box-shadow:0 0 0 1px #fdeeda}
+  [data-theme="light"] .c-brand.b-pi{color:#0e7490;background:#daf4fa;box-shadow:0 0 0 1px #daf4fa}
+  [data-theme="light"] .c-brand.b-prime{color:#6d28d9;background:#efe9fe;box-shadow:0 0 0 1px #efe9fe}
+  .c-name{font-weight:700;font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  /* A: 状态徽章 = 实心色块(白字) */
+  .c-badge{margin-left:auto;font-size:10.5px;font-weight:800;letter-spacing:.6px;
+           padding:3px 9px;border-radius:20px;color:#fff;text-shadow:0 1px 2px rgba(0,0,0,.35)}
+  .x-run .c-badge{background:var(--run);box-shadow:0 0 8px rgba(38,208,124,.5)}
+  .x-err .c-badge{background:var(--err);box-shadow:0 0 8px rgba(255,92,92,.55)}
+  .x-think .c-badge{background:var(--think);box-shadow:0 0 8px rgba(199,146,234,.5)}
+  .x-wait .c-badge{background:var(--wait);box-shadow:0 0 8px rgba(229,192,123,.5)}
+  .x-idle .c-badge{background:var(--idle)}
+
+  .c-cmd{display:block;color:var(--muted);font-size:11px;padding:0 12px 8px;
+         overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
+
+  .c-body{flex:1;display:flex;flex-direction:column;gap:4px;padding:2px 12px 12px}
+  .think-line{display:flex;gap:7px;font-size:12px;color:var(--text)}
+  .think-line .t-ts{color:var(--dim);flex:none;font-size:11px;min-width:36px}
+  .think-line .t-txt{color:var(--text);overflow:hidden;display:-webkit-box;
+        -webkit-line-clamp:2;-webkit-box-orient:vertical;
+        word-break:break-all}
+  .x-think .t-txt{color:var(--think)}
+  .c-empty{color:var(--muted);font-size:12px;padding:4px 0}
+
+  .c-foot{margin-top:auto;display:flex;gap:12px;padding:8px 12px;border-top:1px solid var(--border);
+          color:var(--dim);font-size:11.5px;flex-wrap:wrap}
+  .c-foot b{color:var(--text);font-weight:500}
+
+  /* cron 特有 */
+  .cron-row{display:flex;justify-content:space-between;font-size:12px;padding:2px 0;color:var(--text)}
+  .cron-row .lab{color:var(--muted)}
+  .cron-err{color:var(--err);font-size:11.5px;margin-top:4px;word-break:break-all}
+
+  .events{margin:8px 22px 60px}
+  .events h2{font-size:13px;color:var(--dim);letter-spacing:1px;margin:0 0 10px;
+             text-transform:uppercase;border-bottom:1px solid var(--border);padding-bottom:6px}
+  .ev{display:flex;gap:10px;padding:4px 0;font-size:12px;border-bottom:1px dashed var(--border)}
+  .ev .e-ts{color:var(--muted);flex:none;width:54px}
+  .ev .e-ag{color:var(--acc);flex:none;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .ev .e-ste{color:var(--dim)}
+  .ev .e-ms{color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .ev.x-err .e-ste{color:var(--err)}
+  .ev.x-run .e-ste{color:var(--run)}
+  .ev.x-think .e-ste{color:var(--think)}
+  .ev.x-wait .e-ste{color:var(--wait)}
+
+  .none{grid-column:1/-1;color:var(--muted);text-align:center;padding:40px;border:1px dashed var(--border);
+        border-radius:10px}
+  @media(max-width:700px){main{grid-template-columns:1fr;padding:12px 12px 40px}}
+</style>
+</head>
+<body>
+<header>
+  <h1><span class="dot live" id="liveDot"></span>Agent Board</h1>
+  <div class="stat s-total">活跃 <b id="stTotal">0</b></div>
+  <div class="stat s-run">运行 <b id="stRun">0</b></div>
+  <div class="stat s-err">异常 <b id="stErr">0</b></div>
+  <div class="stat">事件 <b id="stEvents">0</b></div>
+  <div class="right"><span id="runLabel">run=–</span><span id="clock">– –</span>
+    <button id="themeBtn" type="button" title="切换深浅主题" aria-label="切换主题">🌙</button></div>
+</header>
+<main id="grid"></main>
+<div class="events"><h2>事件流</h2><div id="evList"></div></div>
+
+<script>
+const grid=document.getElementById('grid');
+const $=id=>document.getElementById(id);
+
+/* ── 深浅主题切换(localStorage 记忆) ── */
+function applyTheme(t){
+  document.documentElement.setAttribute('data-theme',t);
+  document.getElementById('themeBtn').textContent = (t==='light' ? '🌙' : '☀️');
+}
+(function initTheme(){
+  const saved = localStorage.getItem('agentboard-theme');
+  applyTheme(saved==='light' ? 'light' : 'dark');
+  document.getElementById('themeBtn').addEventListener('click', ()=>{
+    const cur = document.documentElement.getAttribute('data-theme');
+    const next = (cur==='light') ? 'dark' : 'light';
+    applyTheme(next);
+    localStorage.setItem('agentboard-theme', next);
+  });
+})();
+
+const fmtDur=s=>{s=+s||0;const h=(s/3600)|0,m=((s%3600)/60)|0,se=s%60;
+  return (h?h+'h'+String(m).padStart(2,'0')+'m':m?m+'m'+String(se).padStart(2,'0')+'s':se+'s');};
+
+function cls(a){const g=(a&&a.cls&&a.cls.group)||'idle';
+  // 后端 group 是完整词(running/error/thinking/waiting), CSS 用短 class 名(run/err/think/wait)
+  const map={running:'run',error:'err',thinking:'think',waiting:'wait'};
+  return map[g]||g;}
+function esc(t){t=String(t==null?'':t);return t.replace(/&/g,'&amp;').replace(/</g,'&lt;')
+   .replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+
+function thinkBlock(a){
+  if(a.type==='cron') return '';
+  const th=(a.think||[]).slice(-3).reverse();
+  if(!th.length) return '<div class="c-empty">— 暂无思维链 —</div>';
+  const lines=th.map(t=>`<div class="think-line"><span class="t-ts">${esc(t.ts)}</span>`+
+    `<span class="t-txt">${esc(t.text)}</span></div>`).join('');
+  return lines||'<div class="c-empty">— 暂无思维链 —</div>';
+}
+
+function cronBody(a){
+  const r=[];const row=(lab,v)=>`<div class="cron-row"><span class="lab">${lab}</span><span>${esc(v)}</span></div>`;
+  if(a.state!=null&&a.state!='')r.push(row('state',a.state));
+  if(a.sched)r.push(row('schedule',a.sched));
+  if(a.next_run)r.push(row('next',a.next_run));
+  if(a.last_run)r.push(row('last',a.last_run));
+  const th=(a.think||[]).slice(-1);
+  const tbt=th.length?`<div class="think-line"><span class="t-ts">${esc(th[0].ts)}</span><span class="t-txt">${esc(th[0].text)}</span></div>`:'';
+  const err=a.err?`<div class="cron-err">✘ ${esc(a.err)}</div>`:'';
+  return r.join('')+tbt+err;
+}
+
+function brandOf(agent){
+  const n=String(agent||'').toLowerCase();
+  if(/^hermes/.test(n)) return 'hermes';
+  if(/^opencode/.test(n)) return 'opencode';
+  if(/^codex/.test(n)) return 'codex';
+  if(/^pi[\s-_.]/.test(n)) return 'pi';
+  if(/^prime/.test(n)) return 'prime';
+  return 'other';
+}
+function brandHTML(agent){
+  const b=brandOf(agent);
+  if(b==='other') return ''; // 未知类型不显示印章
+  return `<span class="c-brand b-${b}">${b}</span>`;
+}
+
+function cardHTML(a){
+  const g=cls(a);
+  const c=String(a.agent||'');
+  const sub=[];
+  const foot=[];
+  if(a.pid!=null && a.pid!=='')foot.push(`<span>pid <b>${a.pid==='0'?'会话':esc(a.pid)}</b></span>`);
+  if(a.dur!=null)foot.push(`<span>时长 <b class="dur" data-agent="${esc(c)}">${fmtDur(a.dur)}</b></span>`);
+  if(a.last&&a.last.stage)foot.push(`<span>阶段 <b>${esc(a.last.stage)}</b></span>`);
+  if(a.last&&a.last.ts)foot.push(`<span>${esc(a.last.ts)}</span>`);
+  const lastMsg=a.last&&a.last.msg?`<div class="c-empty">· ${esc(a.last.msg)}</div>`:'';
+  return `<section class="card x-${g}" data-agent="${esc(c)}">
+    <div class="c-head">${brandHTML(c)}
+      <span class="c-name" title="${esc(c)}">${esc(c)}</span>
+      <span class="c-badge">${esc(a.cls&&a.cls.label||'IDLE')}</span></div>
+    ${a.cmd?`<div class="c-cmd" title="${esc(a.cmd)}">${esc(a.cmd)}</div>`:''}
+    <div class="c-body">${a.type==='cron'?cronBody(a):thinkBlock(a)}${lastMsg}</div>
+    <div class="c-foot">
+      ${foot.join('')}
+      ${a.type==='cron'&&a.last_run?`<span>上次 <b>${esc(a.last_run)}</b></span>`:''}
+    </div>
+  </section>`;
+}
+
+function render(d){
+  $('stTotal').textContent=d.stats.total;
+  $('stRun').textContent=d.stats.running;
+  $('stErr').textContent=d.stats.error;
+  $('stEvents').textContent=d.stats.events;
+  $('runLabel').textContent='run='+d.run;
+  if(!d.agents||!d.agents.length){
+    _clearBody(); grid.innerHTML='<div class="none">当前没有活动的 agent —— 有则自动呈现</div>'; return;
+  }
+  // ── FLIP 增量更新: 卡片消失/出现/移动各自丝滑动效, 不整页重绘 ──
+  const prev = new Map();                        // agent -> element
+  grid.querySelectorAll('.card').forEach(el=>prev.set(el.dataset.agent, el));
+  const oldRects = new Map();
+  [...prev.values()].forEach(el=>oldRects.set(el.dataset.agent, el.getBoundingClientRect()));
+  const newSet = new Set(d.agents.map(a=>a.agent));
+
+  // 1) 消失的卡: 保留在原位播放退场动效, 动画结束后自移除
+  prev.forEach((el,id)=>{ if(!newSet.has(id)){
+    el.classList.add('leaving');
+    const rm=()=>el.remove();
+    el.addEventListener('transitionend',rm,{once:true});
+    el.addEventListener('animationend',rm,{once:true});
+    setTimeout(rm,520); // 兜底
+  }});
+
+  // 2) 按最新顺序重排: appendChild 移动/插入, 不触发整车重绘
+  d.agents.forEach(a=>{
+    let el = prev.get(a.agent);
+    const sig = _sig(a);
+    if(el && !el.classList.contains('leaving')){
+      if(el.dataset.sig !== sig) el = _updateCard(el, a, sig);  // 内容变化才原位刷新
+    } else {
+      const div=document.createElement('div');
+      div.innerHTML=cardHTML(a);
+      el=div.firstChild;
+      el.dataset.sig = sig;
+      el.classList.add('enter');
+    }
+    grid.appendChild(el);   // 已存在的会移动到最后(完成重排), 新增的按序插入
+  });
+
+  // 3) 移动的卡: FLIP 平滑滑到新位置
+  grid.querySelectorAll('.card').forEach(el=>{
+    if(el.classList.contains('leaving')) return;
+    const old = oldRects.get(el.dataset.agent);
+    if(!old) return;
+    const nr = el.getBoundingClientRect();
+    const dx = old.left - nr.left, dy = old.top - nr.top;
+    if(dx || dy){
+      el.style.transition='none';
+      el.style.transform=`translate(${dx}px,${dy}px)`;
+      requestAnimationFrame(()=>requestAnimationFrame(()=>{
+        el.style.transition='';
+        el.style.transform='';
+      }));
+    }
+  });
+}
+function _sig(a){
+  // 轻量签名: 忽略本地自增的 dur, 其余变化都触发内容刷新
+  const o={}; for(const k in a){ if(k!=='dur') o[k]=a[k]; }
+  return JSON.stringify(o);
+}
+function _updateCard(el, a, sig){
+  const div=document.createElement('div');
+  div.innerHTML=cardHTML(a);
+  const fresh=div.firstChild;
+  fresh.dataset.sig = sig;
+  el.replaceWith(fresh);   // 原位替换, 保持网格位置, 不动画(避免每帧闪烁)
+  return fresh;
+}
+function _clearBody(){
+  grid.querySelectorAll('.card').forEach(el=>{
+    el.classList.add('leaving');
+    setTimeout(()=>el.remove(),260);
+  });
+}
+function renderEvents(d){
+  const l=document.getElementById('evList');
+  if(!d.events||!d.events.length){l.innerHTML='<div class="ev">— 暂无事件 —</div>';return;}
+  l.innerHTML=d.events.map(e=>`<div class="ev x-${cls(e)}">
+    <span class="e-ts">${esc(e.ts)}</span>
+    <span class="e-ag">${esc(e.agent)}</span>
+    <span class="e-ste">${esc(e.status)}</span>
+    <span class="e-ms">${esc(e.msg)}</span></div>`).join('');
+}
+function tickClock(){const n=new Date();$('clock').textContent=
+  String(n.getHours()).padStart(2,'0')+':'+String(n.getMinutes()).padStart(2,'0')+':'+String(n.getSeconds()).padStart(2,'0');}
+
+let data=null,off=0;
+function apply(d){data=d;off=0;render(data);renderEvents(data);$('liveDot').classList.remove('off');}
+// ── WebSocket 实时推送(优先), 失败时回退到轮询 ──
+let ws=null,wsOk=false,pollTimer=null;
+function connectWS(){
+  try{
+    const proto=location.protocol==='https:'?'wss':'ws';
+    ws=new WebSocket(`${proto}://${location.host}/ws`);
+    ws.onopen=()=>{wsOk=true;stopPoll();};
+    ws.onmessage=e=>{try{apply(JSON.parse(e.data));}catch(_){}};
+    ws.onclose=()=>{wsOk=false;startPoll();};
+    ws.onerror=()=>{try{ws.close();}catch(_){}};
+  }catch(e){startPoll();}
+}
+function startPoll(){if(pollTimer)return;pollTimer=setInterval(poll,200);poll();}
+function stopPoll(){if(pollTimer){clearInterval(pollTimer);pollTimer=null;}}
+async function poll(){
+  try{
+    const r=await fetch('/api/data',{cache:'no-store'});
+    if(!r.ok)throw 0; apply(await r.json());
+  }catch(e){$('liveDot').classList.add('off');}
+}
+connectWS();
+setInterval(tickClock,1000); tickClock();
+// 若 6 秒内 WS 未连上, 自动切轮询兜底
+setTimeout(()=>{if(!wsOk)startPoll();},6000);
+// 时长本地递增(避免仅依赖轮询)
+setInterval(()=>{if(!data||!data.agents)return;
+  document.querySelectorAll('.card .dur').forEach(el=>{
+    const a=data.agents.find(x=>String(x.agent)===el.dataset.agent);
+    if(a&&typeof a.dur==='number')el.textContent=fmtDur(a.dur+(1));
+  });},1000);
+</script>
+</body>
+</html>
