@@ -382,10 +382,12 @@ class BoardScanner:
         return cards
 
     def _stats(self, cards, events):
-        ntotal = len(cards)
+        # DONE 已移到右侧完成栏，不再计入顶部“活跃/运行”统计。
+        active = [c for c in cards if c.get("cls", {}).get("label") != "DONE"]
+        ntotal = len(active)
         nrt = 0
         nerr = 0
-        for c in cards:
+        for c in active:
             if c.get("type") == "cron":
                 continue
             if c.get("status") == "running":
