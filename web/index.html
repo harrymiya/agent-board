@@ -69,6 +69,9 @@
   main{position:relative;height:calc(100% - var(--events-height, 230px) - 3px);min-height:150px;flex:none;display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));
        perspective:1400px;
        align-content:start;gap:14px;padding:17px 22px 20px;overflow:auto;overscroll-behavior:contain}
+  .type-sep{grid-column:1/-1;font:600 9.5px/1 ui-monospace,Menlo,Consolas,monospace;
+    letter-spacing:1.6px;text-transform:uppercase;color:var(--muted);padding:6px 0 0;
+    border-top:1px solid var(--border)}
 
   .done-panel{display:flex;flex-direction:column;border-left:1px solid rgba(210,214,218,.24);background:linear-gradient(90deg,rgba(255,255,255,.045),transparent 8px),linear-gradient(180deg,rgba(255,255,255,.055),rgba(0,0,0,.10) 70%);box-shadow:inset 1px 0 rgba(255,255,255,.05),-12px 0 30px rgba(0,0,0,.14);min-height:0}
   .panel-title{display:flex;align-items:center;gap:9px;padding:16px 16px 14px;color:var(--text);
@@ -368,6 +371,10 @@ function render(d){
     return;
   }
   if(empty)empty.remove();
+  // ── 按品牌分组: 同类同行, 异类换行 ──
+  const brandOrder=['hermes','opencode','codex','pi','prime','other'];
+  const groups=brandOrder.map(b=>active.filter(a=>brandOf(a.agent)===b)).filter(g=>g.length);
+
   // ── FLIP 增量更新: 卡片消失/出现/移动各自丝滑动效, 不整页重绘 ──
   const prev = new Map();                        // agent -> element
   grid.querySelectorAll('.card').forEach(el=>prev.set(el.dataset.agent, el));
@@ -384,23 +391,33 @@ function render(d){
     setTimeout(rm,520); // 兜底
   }});
 
-  // 2) 按最新顺序重排: appendChild 移动/插入, 不触发整车重绘
-  active.forEach(a=>{
-    let el = prev.get(a.agent);
-    const sig = _sig(a);
-    if(el && !el.classList.contains('leaving')){
-      if(el.dataset.sig !== sig) el = _updateCard(el, a, sig);  // 内容变化才原位刷新
-    } else {
-      const div=document.createElement('div');
-      div.innerHTML=cardHTML(a);
-      el=div.firstChild;
-      el.dataset.sig = sig;
-      el.classList.add('enter');
-    }
-    grid.appendChild(el);   // 已存在的会移动到最后(完成重排), 新增的按序插入
+  // 2) 清除旧分隔线
+  grid.querySelectorAll('.type-sep').forEach(el=>el.remove());
+
+  // 3) 按分组顺序重排: 分隔线 + 卡片, appendChild 移动/插入
+  groups.forEach(g=>{
+    const b=brandOf(g[0].agent);
+    const sep=document.createElement('div');
+    sep.className='type-sep';
+    sep.textContent=b;
+    grid.appendChild(sep);
+    g.forEach(a=>{
+      let el = prev.get(a.agent);
+      const sig = _sig(a);
+      if(el && !el.classList.contains('leaving')){
+        if(el.dataset.sig !== sig) el = _updateCard(el, a, sig);
+      } else {
+        const div=document.createElement('div');
+        div.innerHTML=cardHTML(a);
+        el=div.firstChild;
+        el.dataset.sig = sig;
+        el.classList.add('enter');
+      }
+      grid.appendChild(el);
+    });
   });
 
-  // 3) 移动的卡: FLIP 平滑滑到新位置
+  // 4) 移动的卡: FLIP 平滑滑到新位置
   grid.querySelectorAll('.card').forEach(el=>{
     if(el.classList.contains('leaving')) return;
     const old = oldRects.get(el.dataset.agent);
@@ -431,6 +448,7 @@ function _updateCard(el, a, sig){
   return fresh;
 }
 function _clearBody(){
+  grid.querySelectorAll('.type-sep').forEach(el=>el.remove());
   grid.querySelectorAll('.card').forEach(el=>{
     el.classList.add('leaving');
     setTimeout(()=>el.remove(),260);
