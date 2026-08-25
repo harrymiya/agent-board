@@ -275,6 +275,12 @@ class BoardScanner:
             disp = last_status if last_status in DONE_WORDS else "exited"
         else:
             disp = "error"
+        # 思维链新鲜度同步: 进程存活 && 仍在近期输出思维 → 状态提升为活跃,
+        # 避免"思维链在刷新但卡片仍显示 IDLE"的状态滞后(日志状态可能滞后/为 idle)。
+        if status == "running" and disp not in DONE_WORDS:
+            dg = classify(disp).get("group")
+            if dg in ("idle", "waiting") and self._think_recent(thinkf):
+                disp = "running"
         return {
             "agent": agent,
             "type": "proc",
@@ -393,6 +399,47 @@ class BoardScanner:
         except OSError:
             pass
         return out
+
+    @staticmethod
+    def _think_latest_epoch(line_ts):
+        # 把思维链行首的 HH:MM:SS 时间戳解析为 epoch, 无法解析返回 None
+        raw = (line_ts or '').strip()
+        if not raw:
+            return None
+        m = re.fullmatch(r'(\d{2}):(\d{2}):(\d{2})', raw)
+        if not m:
+            return None
+        h, mi, s = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        now = dt.datetime.now().astimezone()
+        cand = now.replace(hour=h, minute=mi, second=s, microsecond=0)
+        # 未来时间(跨午夜)回退到前一天
+        if cand.timestamp() > time.time() + 180:
+            cand -= dt.timedelta(days=1)
+        return cand.timestamp()
+
+    def _think_recent(self, thinkf, window=60.0):
+        # 是否有近期(默认 60s 内)的思维输出。
+        # 从 .think 文件最新时间戳行判断 —— 独立于 .log 状态, 用于把
+        # 仍在活跃输出思维但日志态滞后/为 idle 的卡片提升为活跃。
+        if not thinkf or not os.path.isfile(thinkf):
+            return False
+        try:
+            latest = None
+            with open(thinkf, 'r', encoding='utf-8', errors='replace') as fh:
+                for ln in fh:
+                    ln = ln.rstrip('\n')
+                    if not ln:
+                        continue
+                    ts = (ln.split('|', 1)[0] if '|' in ln else '')
+                    e = self._think_latest_epoch(ts)
+                    if e is not None:
+                        latest = e if latest is None else max(latest, e)
+            if latest is None:
+                return False
+            # 容忍一点点时钟/写盘延迟
+            return (time.time() - latest) <= window + 2.0
+        except OSError:
+            return False
 
     # ---- 扫描入口 ----
     def scan(self):

@@ -48,5 +48,37 @@ class BoardScannerStatusTest(unittest.TestCase):
         self.assertEqual(card["cls"], {"group": "idle", "label": "IDLE"})
 
 
+    def _virtual_card_with_think(self, event_status, think_ts):
+        with tempfile.TemporaryDirectory() as root:
+            scanner = SERVER.BoardScanner(root, "20260825")
+            base = os.path.join(scanner.board_dir, "virtual-agent")
+            with open(base + ".pid", "w", encoding="utf-8") as fh:
+                fh.write("0")
+            with open(base + ".start", "w", encoding="utf-8") as fh:
+                fh.write(str(int(time.time())))
+            with open(base + ".log", "w", encoding="utf-8") as fh:
+                fh.write(f"12:00:00|active|{event_status}|task\n")
+            with open(base + ".think", "w", encoding="utf-8") as fh:
+                fh.write(f"{think_ts}|recent thinking line\n")
+            return scanner.read_agent("virtual-agent")
+
+    def test_idle_promotes_to_running_with_fresh_thinking(self):
+        # 日志态滞后为 idle, 但思维链在近期刷新 (<=60s) → 状态提升为 RUNNING
+        fresh = time.strftime("%H:%M:%S")
+        card = self._virtual_card_with_think("idle", fresh)
+        self.assertEqual(card["cls"], {"group": "running", "label": "RUNNING"})
+
+    def test_idle_stays_idle_with_stale_thinking(self):
+        # 思维链很久没刷新 (>60s) → 保留 IDLE
+        stale = time.strftime("%H:%M:%S", time.localtime(time.time() - 7200))
+        card = self._virtual_card_with_think("idle", stale)
+        self.assertEqual(card["cls"], {"group": "idle", "label": "IDLE"})
+
+    def test_idle_stays_idle_without_thinking(self):
+        # 无思维链 → IDLE 保持
+        card = self._virtual_card("idle")
+        self.assertEqual(card["cls"], {"group": "idle", "label": "IDLE"})
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -107,16 +107,16 @@
     transform-style:preserve-3d;will-change:transform,opacity,box-shadow;
     box-shadow:0 8px 20px rgba(0,0,0,.24),inset 0 1px rgba(255,255,255,.08);
   }
-  .card:before{content:'';position:absolute;z-index:0;inset:-30% -55%;pointer-events:none;
-    background:linear-gradient(105deg,transparent 42%,rgba(255,255,255,.20) 49%,rgba(220,224,228,.07) 51%,transparent 58%);
-    transform:translateX(-70%) rotate(8deg);transition:transform 3.5s cubic-bezier(.2,.75,.25,1)}
+  /* 光泽划过动效已移除(用户要求): 不再有斜向高光带掠过卡片 */
+  .card:before{content:'';position:absolute;z-index:0;inset:0;pointer-events:none;opacity:0}
   /* 悬浮不再改卡片自身 transform，避免与实时 FLIP 排序动画互相抢控制权 */
   .card:after{content:'';position:absolute;z-index:0;inset:0;pointer-events:none;opacity:0;
     background:radial-gradient(240px circle at var(--mx,50%) var(--my,35%),rgba(255,255,255,.14),rgba(255,255,255,.035) 34%,transparent 68%);
     mix-blend-mode:screen;transition:opacity .45s ease}
   .card:hover{border-color:rgba(205,210,215,.46);filter:brightness(1.045);
     box-shadow:0 12px 28px rgba(0,0,0,.30),0 0 18px rgba(220,224,228,.055),inset 0 1px rgba(255,255,255,.14)}
-  .card:hover:before{transform:translateX(70%) rotate(8deg)}
+  /* 已移除 .card:hover:before 的光泽划过 */
+
   .card:hover:after{opacity:1}
   /* 卡片出现 / 消失 / 移动 的丝滑动效 */
   .card{transition:transform .45s cubic-bezier(.22,.8,.28,1),opacity .45s ease,
@@ -371,9 +371,16 @@ function render(d){
     return;
   }
   if(empty)empty.remove();
-  // ── 按品牌分组: 同类同行, 异类换行 ──
+  // ── 状态排序: 活跃的靠前(运行/思考/等待在前, 异常/空闲在后) ──
+  function statusRank(a){
+    const g=(a.cls&&a.cls.group)||'idle';
+    return ({running:5,thinking:4,waiting:3,error:2,idle:1})[g]||0;
+  }
+  // ── 按品牌分组: 同类同行, 异类换行; 组内按状态活跃度从高到低 ──
   const brandOrder=['hermes','opencode','codex','pi','prime','other'];
-  const groups=brandOrder.map(b=>active.filter(a=>brandOf(a.agent)===b)).filter(g=>g.length);
+  const groups=brandOrder.map(b=>active.filter(a=>brandOf(a.agent)===b)
+    .sort((x,y)=>statusRank(y)-statusRank(x)||String(x.agent).localeCompare(String(y.agent))))
+    .filter(g=>g.length);
 
   // ── FLIP 增量更新: 卡片消失/出现/移动各自丝滑动效, 不整页重绘 ──
   const prev = new Map();                        // agent -> element
