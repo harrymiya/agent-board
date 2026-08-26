@@ -23,6 +23,8 @@ BOARD_ROOT / AGENTBOARD_RUN 环境变量与 agentboard.sh 相同。
 import json
 import os
 import re
+import shutil
+import tempfile
 import time
 
 BOARD_ROOT = os.environ.get("AGENTBOARD_ROOT", os.path.expanduser("~/.hermes/agent-board"))
@@ -1029,22 +1031,38 @@ def write_cron_cards(jobs):
     return n
 
 def main():
-    os.makedirs(OUT_DIR, exist_ok=True)
-    # 清空旧生成条目(只清 __discovered__ 内,不碰用户手动登记的)
-    for fn in os.listdir(OUT_DIR):
-        try:
-            os.remove(os.path.join(OUT_DIR, fn))
-        except OSError:
-            pass
-    procs = scan_processes()
-    np_ = write_process_cards(procs)
-    ns_ = write_hermes_session_cards()
-    nsub_ = write_prime_subagent_cards()
-    # 历史任务已按用户要求移除,不再生成 cron 卡(保留函数,需要时启用)
-    nc = 0
-    # 汇总(供 agentboard.sh 显示/调试)
-    counts = {k: len(v) for k, v in procs.items() if k != "hermes"}
-    print(f"discovered: sessions={ns_} procs={np_} subagents={nsub_} ({', '.join(f'{k}:{v}' for k,v in counts.items()) or 'none'}) → {OUT_DIR}")
+    # 先写入同一文件系统上的临时目录，再逐个原子替换文件，避免 server
+    # 扫描到“半个卡片”。直接用新目录覆盖非空旧目录在 POSIX 上并不可靠。
+    final_out = OUT_DIR
+    run_dir = os.path.dirname(final_out)
+    os.makedirs(run_dir, exist_ok=True)
+    staging = tempfile.mkdtemp(prefix=".discovered-", dir=run_dir)
+    try:
+        globals()["OUT_DIR"] = staging
+        procs = scan_processes()
+        np_ = write_process_cards(procs)
+        ns_ = write_hermes_session_cards()
+        nsub_ = write_prime_subagent_cards()
+        # 历史任务已按用户要求移除,不再生成 cron 卡(保留函数,需要时启用)
+        counts = {k: len(v) for k, v in procs.items() if k != "hermes"}
+        os.makedirs(final_out, exist_ok=True)
+        staged_names = set(os.listdir(staging))
+        for fn in staged_names:
+            os.replace(os.path.join(staging, fn), os.path.join(final_out, fn))
+        # 新结果已经完整落盘后再删除过期卡片；中途失败时旧数据仍可用。
+        for fn in os.listdir(final_out):
+            if fn not in staged_names:
+                try:
+                    os.remove(os.path.join(final_out, fn))
+                except OSError:
+                    pass
+        os.rmdir(staging)
+        staging = None
+        print(f"discovered: sessions={ns_} procs={np_} subagents={nsub_} ({', '.join(f'{k}:{v}' for k,v in counts.items()) or 'none'}) → {final_out}")
+    finally:
+        globals()["OUT_DIR"] = final_out
+        if staging and os.path.isdir(staging):
+            shutil.rmtree(staging, ignore_errors=True)
 
 if __name__ == "__main__":
     main()

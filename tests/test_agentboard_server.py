@@ -80,5 +80,38 @@ class BoardScannerStatusTest(unittest.TestCase):
         self.assertEqual(card["cls"], {"group": "idle", "label": "IDLE"})
 
 
+class BoardScannerSourceTest(unittest.TestCase):
+    def test_manual_card_is_not_reported_as_discovered(self):
+        with tempfile.TemporaryDirectory() as root:
+            scanner = SERVER.BoardScanner(root, "20260825")
+            base = os.path.join(scanner.board_dir, "manual-agent")
+            with open(base + ".pid", "w", encoding="utf-8") as fh:
+                fh.write("0")
+            with open(base + ".start", "w", encoding="utf-8") as fh:
+                fh.write(str(int(time.time())))
+            card = scanner.read_agent("manual-agent")
+            self.assertEqual(card["source"], "manual")
+
+    def test_discovered_card_keeps_discovered_source(self):
+        with tempfile.TemporaryDirectory() as root:
+            scanner = SERVER.BoardScanner(root, "20260825")
+            discovered = os.path.join(scanner.board_dir, "__discovered__")
+            os.makedirs(discovered)
+            base = os.path.join(discovered, "auto-agent")
+            with open(base + ".pid", "w", encoding="utf-8") as fh:
+                fh.write("0")
+            with open(base + ".start", "w", encoding="utf-8") as fh:
+                fh.write(str(int(time.time())))
+            card = scanner.read_agent("auto-agent")
+            self.assertEqual(card["source"], "discovered")
+
+
+class BoardStoreConfigTest(unittest.TestCase):
+    def test_interval_must_be_positive(self):
+        with tempfile.TemporaryDirectory() as root:
+            with self.assertRaises(ValueError):
+                SERVER.BoardStore(root, "20260825", 0)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -80,5 +80,44 @@ class PrimeProcessStatusTest(unittest.TestCase):
         self.assertEqual(self._status("mystery"), "idle")
 
 
+class DiscoverOutputTest(unittest.TestCase):
+    def test_main_replaces_output_directory_atomically(self):
+        with tempfile.TemporaryDirectory() as root:
+            final_out = os.path.join(root, "20260825", "__discovered__")
+            os.makedirs(final_out)
+            with open(os.path.join(final_out, "old.pid"), "w", encoding="utf-8") as fh:
+                fh.write("123")
+
+            original = {
+                "out": DISCOVER.OUT_DIR,
+                "scan": DISCOVER.scan_processes,
+                "proc": DISCOVER.write_process_cards,
+                "session": DISCOVER.write_hermes_session_cards,
+                "sub": DISCOVER.write_prime_subagent_cards,
+            }
+            DISCOVER.OUT_DIR = final_out
+            DISCOVER.scan_processes = lambda: {}
+
+            def write_new_card(_):
+                with open(os.path.join(DISCOVER.OUT_DIR, "new.pid"), "w", encoding="utf-8") as fh:
+                    fh.write("456")
+                return 1
+
+            DISCOVER.write_process_cards = write_new_card
+            DISCOVER.write_hermes_session_cards = lambda: 0
+            DISCOVER.write_prime_subagent_cards = lambda: 0
+            try:
+                DISCOVER.main()
+            finally:
+                DISCOVER.OUT_DIR = original["out"]
+                DISCOVER.scan_processes = original["scan"]
+                DISCOVER.write_process_cards = original["proc"]
+                DISCOVER.write_hermes_session_cards = original["session"]
+                DISCOVER.write_prime_subagent_cards = original["sub"]
+
+            self.assertTrue(os.path.isfile(os.path.join(final_out, "new.pid")))
+            self.assertFalse(os.path.exists(os.path.join(final_out, "old.pid")))
+
+
 if __name__ == "__main__":
     unittest.main()

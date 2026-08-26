@@ -31,8 +31,8 @@ import json
 import logging
 import os
 import re
-import socket
 import struct
+import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -60,18 +60,29 @@ class WebSocket:
         self._lock = threading.Lock()
         # 升级握手必须由 handler 线程完成(因为它持有 HTTP 请求行/头)
 
+    MAX_FRAME_SIZE = 2 * 1024 * 1024
+
     def _recv_frame(self):
         b = self.sock.recv(2)
         if len(b) < 2:
             raise ConnectionError("short header")
         b1, b2 = b[0], b[1]
+        if b1 & 0x70:
+            raise ConnectionError("unsupported websocket extension")
+        final = bool(b1 & 0x80)
         opcode = b1 & 0x0F
         masked = b2 & 0x80
+        if not masked:
+            raise ConnectionError("client frame is not masked")
         length = b2 & 0x7F
         if length == 126:
             length = struct.unpack(">H", self._recv_exact(2))[0]
         elif length == 127:
             length = struct.unpack(">Q", self._recv_exact(8))[0]
+        if length > self.MAX_FRAME_SIZE:
+            raise ConnectionError("websocket frame too large")
+        if opcode >= 0x8 and (not final or length > 125):
+            raise ConnectionError("invalid websocket control frame")
         mask = self._recv_exact(4) if masked else None
         payload = self._recv_exact(length)
         if mask:
@@ -93,6 +104,8 @@ class WebSocket:
         if self.closed:
             return
         payload = text.encode("utf-8")
+        if len(payload) > self.MAX_FRAME_SIZE:
+            raise ValueError("websocket payload too large")
         n = len(payload)
         head = bytearray([0x81])  # FIN + text
         if n < 126:
@@ -177,6 +190,26 @@ def find_run(root):
     return time.strftime("%Y%m%d")
 
 
+def port_number(value):
+    try:
+        port = int(value)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError("port must be an integer")
+    if not 1 <= port <= 65535:
+        raise argparse.ArgumentTypeError("port must be between 1 and 65535")
+    return port
+
+
+def positive_float(value):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError("interval must be a number")
+    if number <= 0:
+        raise argparse.ArgumentTypeError("interval must be greater than 0")
+    return number
+
+
 class BoardScanner:
     """扫描看板文件 → 内存快照(进程卡 + cron 卡 + 全局统计)。"""
 
@@ -204,12 +237,13 @@ class BoardScanner:
     def read_agent(self, agent):
         base = os.path.join(self.board_dir, agent)          # 手动登记
         dbase = os.path.join(self.board_dir, "__discovered__", agent)  # 自动发现
-        card = {"agent": agent, "source": "manual"}
         pidf = startf = cmdf = logf = thinkf = cronf = None
+        pid_source = "manual"
         # 优先 __discovered__
         for f in (dbase, base):
             if os.path.isfile(f + ".pid"):
-                pidf, card["source"] = f + ".pid", "discovered"
+                pidf = f + ".pid"
+                pid_source = "discovered" if f == dbase else "manual"
                 break
         for f in (dbase, base):
             if os.path.isfile(f + ".cron"):
@@ -234,7 +268,8 @@ class BoardScanner:
                 break
 
         if cronf:
-            return self._cron_card(agent, cronf, thinkf)
+            cron_source = "discovered" if cronf == dbase + ".cron" else "manual"
+            return self._cron_card(agent, cronf, thinkf, cron_source)
         if not pidf:
             return None
 
@@ -284,7 +319,7 @@ class BoardScanner:
         return {
             "agent": agent,
             "type": "proc",
-            "source": "discovered" if dbase else "manual",
+            "source": pid_source,
             "pid": pidv,
             "status": status,
             "dur": dur,
@@ -343,7 +378,7 @@ class BoardScanner:
             st = "running"
         return {"ts": ts, "stage": stage, "status": st, "cls": classify(st), "msg": msg, "dur": dur}
 
-    def _cron_card(self, agent, cronf, thinkf):
+    def _cron_card(self, agent, cronf, thinkf, source="discovered"):
         raw = self._read(cronf).strip()
         parts = raw.split("|") if raw else ["?"] * 7
         name = parts[0] or agent
@@ -357,7 +392,7 @@ class BoardScanner:
         return {
             "agent": agent,
             "type": "cron",
-            "source": "discovered",
+            "source": source,
             "name": name,
             "state": state,
             "status": st,
@@ -487,6 +522,8 @@ class BoardStore:
     def __init__(self, root, run=None, interval=0.2):
         self.scanner = BoardScanner(root, run)
         self.interval = float(interval)
+        if self.interval <= 0:
+            raise ValueError("interval must be greater than 0")
         self.stats = {}
         self.agents = []
         self.events = []
@@ -494,6 +531,8 @@ class BoardStore:
         self._clients = []          # WebSocket 连接
         self._clients_lock = threading.Lock()
         self._refresh_lock = threading.Lock()
+        self._data_lock = threading.RLock()
+        self._stop = threading.Event()
         self.last_refresh = 0.0
         self.last_discover = 0.0
         self.last_error = ""
@@ -638,17 +677,28 @@ class BoardStore:
 
     def _refresh(self):
         with self._refresh_lock:
-            self.agents = self.scanner.scan()
-            self.events, self.total_events = self._collect_events()
-            self.stats = self.scanner._stats(self.agents, self.total_events)
-            self.last_refresh = time.time()
+            agents = self.scanner.scan()
+            events, total_events = self._collect_events()
+            stats = self.scanner._stats(agents, total_events)
+            with self._data_lock:
+                self.agents = agents
+                self.events = events
+                self.total_events = total_events
+                self.stats = stats
+                self.last_refresh = time.time()
 
     def data(self):
-        return {"ts": int(time.time()), "run": self.scanner.run, "stats": self.stats,
-                "agents": self.agents, "events": self.events,
-                "monitor": {"last_refresh": self.last_refresh,
-                             "last_discover": self.last_discover,
-                             "error": self.last_error}}
+        with self._data_lock:
+            return {"ts": int(time.time()), "run": self.scanner.run,
+                    "stats": dict(self.stats), "agents": list(self.agents),
+                    "events": list(self.events),
+                    "monitor": {"last_refresh": self.last_refresh,
+                                 "last_discover": self.last_discover,
+                                 "error": self.last_error}}
+
+    def stop(self):
+        """Request both background loops to stop; useful for tests and clean shutdown."""
+        self._stop.set()
 
     def run_loop(self):
         # 每轮先跑一次自动发现(将 /proc + codex sqlite 的最新状态刷成 __discovered__/ 文件),
@@ -658,10 +708,9 @@ class BoardStore:
         # discover 会启动 Python 子进程并扫描多个数据库/JSONL，不需要 5Hz 重复执行。
         discover_span = max(1.0, self.interval)
         last_disc = [0.0]
-        stop = [False]
 
         def _loop_discover():
-            while not stop[0]:
+            while not self._stop.is_set():
                 now = time.time()
                 if now - last_disc[0] >= discover_span:
                     last_disc[0] = now
@@ -671,12 +720,11 @@ class BoardStore:
                     except Exception as exc:
                         self.last_error = f"discover: {type(exc).__name__}: {exc}"
                         log.exception("discover loop failed")
-                time.sleep(min(0.05, discover_span / 4))
+                self._stop.wait(min(0.05, discover_span / 4))
 
         threading.Thread(target=_loop_discover, daemon=True).start()
 
-        while not stop[0]:
-            time.sleep(self.interval)
+        while not self._stop.wait(self.interval):
             try:
                 self._refresh()
                 sig = self._sig()
@@ -691,11 +739,11 @@ class BoardStore:
         if not DISCOVER_SCRIPT or not os.path.exists(DISCOVER_SCRIPT):
             return
         env = dict(os.environ)
-        env.setdefault("AGENTBOARD_ROOT", self.scanner.root)
-        env.setdefault("AGENTBOARD_RUN", self.scanner.run)
         try:
             import subprocess
-            result = subprocess.run(["python3", DISCOVER_SCRIPT], env=env,
+            env["AGENTBOARD_ROOT"] = self.scanner.root
+            env["AGENTBOARD_RUN"] = self.scanner.run
+            result = subprocess.run([sys.executable, DISCOVER_SCRIPT], env=env,
                                     capture_output=True, text=True, timeout=30)
             if result.returncode != 0:
                 detail = (result.stderr or result.stdout or "discover failed").strip()[-500:]
@@ -755,8 +803,23 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+        self.send_header("Content-Security-Policy",
+                         "default-src 'self'; connect-src 'self' ws: wss:; "
+                         "style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; "
+                         "base-uri 'none'; frame-ancestors 'none'")
         self.end_headers()
-        self.wfile.write(body)
+        if self.command != "HEAD":
+            try:
+                self.wfile.write(body)
+            except OSError:
+                pass
+
+    def do_HEAD(self):
+        self.do_GET()
 
     def do_GET(self):
         path = self.path.split("?")[0]
@@ -781,13 +844,22 @@ class Handler(BaseHTTPRequestHandler):
             self._send_bytes(b"not found", "text/plain; charset=utf-8", 404)
 
 
+class AgentBoardHTTPServer(ThreadingHTTPServer):
+    """Keep client connections from preventing a clean process shutdown."""
+
+    daemon_threads = True
+    allow_reuse_address = True
+
+
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     ap = argparse.ArgumentParser(description="agentboard web backend")
-    ap.add_argument("--port", type=int, default=int(os.environ.get("AGENTBOARD_PORT", "8710")))
+    ap.add_argument("--port", type=port_number, default=port_number(os.environ.get("AGENTBOARD_PORT", "8710")))
     ap.add_argument("--root", default=DEFAULT_ROOT)
     ap.add_argument("--run", default=None)
-    ap.add_argument("--interval", type=float, default=float(os.environ.get("AGENTBOARD_INTERVAL", "0.2")))
+    ap.add_argument("--interval", type=positive_float,
+                    default=positive_float(os.environ.get("AGENTBOARD_INTERVAL", "0.2")),
+                    help="refresh interval in seconds (must be > 0)")
     ap.add_argument("--web", default=DEFAULT_WEB)
     args = ap.parse_args()
 
@@ -798,13 +870,16 @@ def main():
     import threading
     threading.Thread(target=store.run_loop, daemon=True).start()
 
-    server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+    server = AgentBoardHTTPServer(("127.0.0.1", args.port), Handler)
     print(f"agentboard-web serving on http://127.0.0.1:{args.port} (run={store.scanner.run}, "
           f"interval={args.interval}s, root={args.root})")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
+    finally:
+        store.stop()
+        server.server_close()
 
 
 if __name__ == "__main__":
