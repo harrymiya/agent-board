@@ -12,6 +12,7 @@
 
 ```
 agent-board/
+├── board.sh                     # 一键启动器: board / board start / stop / status / open
 ├── server/agentboard_server.py    # HTTP/WebSocket 看板后端(唯一需运行的进程)
 ├── web/index.html                 # 前端单页(自动被后端读取并提供)
 ├── discover/
@@ -21,16 +22,32 @@ agent-board/
 
 ---
 
-## 快速开始
+## 快速开始(一键)
 
 ```bash
-cd /home/musk/code/agent-board
+board          # 打开浏览器访问看板 (服务没起会自动拉起, 幂等)
+```
 
-# 1) 启动看板后端(默认 127.0.0.1:8710)
-python3 server/agentboard_server.py --port 8710
+`board` 是仓库自带的零依赖 bash 启动器(也可软链到 ~/.local/bin 全局可用):
 
-# 2) 浏览器打开
-open http://127.0.0.1:8710
+| 命令 | 作用 |
+|------|------|
+| `board` / `board open` | 启动服务(已在跑则跳过)+ 打开浏览器 |
+| `board start` | 仅确保服务在跑(幂等) |
+| `board stop` / `board restart` | 停止 / 重启 |
+| `board status` | 查看运行状态 |
+| `board log [n]` | 查看最近 n 行日志(默认 30) |
+
+优先走 systemd 用户服务(`agentboard.service`, 开机自启);无 systemd 的机器自动
+回退为 nohup 后台进程, 所以任何环境敲 `board` 都能一键打开。
+
+### 手动启动(等价于 board start)
+
+```bash
+cd /mnt/data/code/agent-board
+
+python3 server/agentboard_server.py --port 8710    # 默认 127.0.0.1:8710
+# 浏览器打开 http://127.0.0.1:8710
 ```
 
 服务启动后：
