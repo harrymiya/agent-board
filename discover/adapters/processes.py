@@ -2,6 +2,7 @@
 
 import os
 import re
+import sys
 from typing import Iterable, List, Sequence
 
 from .base import AgentAdapter, ProcessInfo
@@ -18,6 +19,10 @@ def _boot_time():
 
 def scan_processes(adapters: Sequence[AgentAdapter]) -> List[ProcessInfo]:
     """Read /proc once and let adapters decide ownership of each process."""
+    if sys.platform == "darwin":
+        from .processes_macos import scan_processes as scan_macos_processes
+
+        return scan_macos_processes(adapters, os.getpid())
     found: List[ProcessInfo] = []
     current_pid = os.getpid()
     boot_time = _boot_time()

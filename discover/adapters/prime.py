@@ -5,7 +5,7 @@ import os
 import re
 import time
 
-from .base import AgentAdapter, DiscoveryContext, ProcessInfo, read_jsonl
+from .base import AgentAdapter, DiscoveryContext, ProcessInfo, process_alive, read_jsonl
 
 
 LEASES = os.path.expanduser("~/.prime/agent/session-leases")
@@ -106,12 +106,7 @@ def process_status(pid):
 
 
 def _alive(pid):
-    try:
-        with open(f"/proc/{int(pid)}/stat", encoding="utf-8", errors="replace") as fh:
-            state = fh.read().rsplit(")", 1)[-1].split()
-        return bool(state and state[0] != "Z" and os.kill(int(pid), 0) is None)
-    except (OSError, ValueError, IndexError):
-        return False
+    return process_alive(pid)
 
 
 def _parent_pid(prefix):

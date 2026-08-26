@@ -158,7 +158,7 @@ do_stop() {
 
 open_browser() {
     local cmd=""
-    for c in xdg-open sensible-browser google-chrome firefox; do
+    for c in open xdg-open sensible-browser google-chrome firefox; do
         command -v "$c" >/dev/null 2>&1 && { cmd="$c"; break; }
     done
     if [ -n "$cmd" ]; then

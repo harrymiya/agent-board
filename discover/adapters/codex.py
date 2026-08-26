@@ -7,7 +7,7 @@ import re
 import sqlite3
 import time
 
-from .base import AgentAdapter, DiscoveryContext, ProcessInfo
+from .base import AgentAdapter, DiscoveryContext, ProcessInfo, process_cwd
 
 
 LOG_DB = os.environ.get("AGENTBOARD_CODEX_LOG_DB", os.path.expanduser("~/.codex/logs_2.sqlite"))
@@ -113,7 +113,8 @@ def _rollout_for_cwd(cwd):
 
 def rollout_think(pid, limit=5):
     try:
-        path = _rollout_for_cwd(os.readlink(f"/proc/{pid}/cwd"))
+        cwd = process_cwd(pid)
+        path = _rollout_for_cwd(cwd) if cwd else None
         if not path:
             return []
         items = []

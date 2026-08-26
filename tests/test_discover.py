@@ -4,7 +4,11 @@ import sqlite3
 import tempfile
 import time
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
+from discover.adapters.codex import CodexAdapter
+from discover.adapters.processes_macos import parse_ps_line, scan_processes as scan_macos_processes
 from discover.adapters.registry import load_adapters
 
 
@@ -124,6 +128,26 @@ class AdapterRegistryTest(unittest.TestCase):
         self.assertEqual(names[:5], ["hermes", "prime", "codex", "opencode", "pi"])
         self.assertIn("claude", names)
         self.assertIn("dsh", names)
+
+    def test_macos_ps_line_preserves_process_start_time(self):
+        parsed = parse_ps_line(
+            " 4242 codex Wed Aug 26 12:34:56 2026 /usr/local/bin/codex exec"
+        )
+        self.assertEqual(parsed[0], 4242)
+        self.assertEqual(parsed[1], "codex")
+        self.assertIn("codex exec", parsed[2])
+        self.assertGreater(parsed[3], 0)
+
+    def test_macos_process_provider_uses_registered_adapters(self):
+        result = SimpleNamespace(
+            returncode=0,
+            stdout=" 4242 codex Wed Aug 26 12:34:56 2026 /usr/local/bin/codex exec\n",
+        )
+        with patch("discover.adapters.processes_macos.subprocess.run", return_value=result):
+            processes = scan_macos_processes([CodexAdapter()], current_pid=9999)
+        self.assertEqual(len(processes), 1)
+        self.assertEqual(processes[0].kind, "codex")
+        self.assertEqual(processes[0].start_epoch_override, parse_ps_line(result.stdout)[3])
 
 
 if __name__ == "__main__":

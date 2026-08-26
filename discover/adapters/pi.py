@@ -5,7 +5,7 @@ import os
 import re
 import time
 
-from .base import AgentAdapter, DiscoveryContext, ProcessInfo
+from .base import AgentAdapter, DiscoveryContext, process_cwd
 
 
 def _text_from_message(message):
@@ -21,7 +21,9 @@ def _text_from_message(message):
 def recent_think(pid, limit=5):
     """Read only the latest assistant text for the process' current project."""
     try:
-        cwd = os.readlink(f"/proc/{pid}/cwd")
+        cwd = process_cwd(pid)
+        if not cwd:
+            return []
         slug = "--" + cwd.lstrip("/").rstrip("/").replace("/", "-") + "--"
         session_dir = os.path.expanduser(f"~/.pi/agent/sessions/{slug}")
         files = [os.path.join(session_dir, name) for name in os.listdir(session_dir)

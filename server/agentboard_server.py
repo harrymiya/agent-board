@@ -32,6 +32,7 @@ import logging
 import os
 import re
 import struct
+import subprocess
 import sys
 import threading
 import time
@@ -338,6 +339,20 @@ class BoardScanner:
             return ""
 
     def _alive(self, pid, expected_start=""):
+        if not os.path.isdir("/proc"):
+            try:
+                os.kill(pid, 0)
+            except (OSError, ProcessLookupError, ValueError):
+                return False
+            if expected_start:
+                actual = self._process_start_epoch(pid)
+                if actual is not None:
+                    try:
+                        if abs(actual - float(expected_start)) > 2.0:
+                            return False
+                    except (TypeError, ValueError):
+                        return False
+            return True
         try:
             with open(f"/proc/{pid}/stat", encoding="utf-8", errors="replace") as fh:
                 stat = fh.read()
@@ -353,6 +368,21 @@ class BoardScanner:
             return True
         except (OSError, ProcessLookupError, ValueError, IndexError):
             return False
+
+    @staticmethod
+    def _process_start_epoch(pid):
+        """Read a process start time on macOS from ps; return None elsewhere."""
+        try:
+            result = subprocess.run(
+                ["ps", "-p", str(pid), "-o", "lstart="],
+                capture_output=True, text=True, timeout=2, check=False,
+            )
+            value = result.stdout.strip()
+            if not value:
+                return None
+            return dt.datetime.strptime(value, "%a %b %d %H:%M:%S %Y").timestamp()
+        except (OSError, subprocess.SubprocessError, TypeError, ValueError, OverflowError):
+            return None
 
     def _last_event(self, logf, status, dur):
         line = ""

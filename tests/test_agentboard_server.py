@@ -3,6 +3,7 @@ import os
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 
 MODULE_PATH = os.path.join(
@@ -111,6 +112,17 @@ class BoardStoreConfigTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             with self.assertRaises(ValueError):
                 SERVER.BoardStore(root, "20260825", 0)
+
+
+class BoardScannerPlatformTest(unittest.TestCase):
+    def test_non_proc_pid_check_uses_process_start_time(self):
+        with tempfile.TemporaryDirectory() as root:
+            scanner = SERVER.BoardScanner(root, "20260825")
+            now = time.time()
+            with patch.object(SERVER.os.path, "isdir", return_value=False), \
+                    patch.object(SERVER.os, "kill", return_value=None), \
+                    patch.object(scanner, "_process_start_epoch", return_value=now):
+                self.assertTrue(scanner._alive(1234, str(now)))
 
 
 if __name__ == "__main__":

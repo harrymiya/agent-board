@@ -6,7 +6,7 @@ import re
 import sqlite3
 import time
 
-from .base import AgentAdapter, DiscoveryContext
+from .base import AgentAdapter, DiscoveryContext, process_cwd
 
 
 DB_PATH = os.path.expanduser("~/.local/share/opencode/opencode.db")
@@ -47,7 +47,9 @@ def recent_think(pid, limit=5):
     if not os.path.exists(DB_PATH):
         return []
     try:
-        cwd = os.readlink(f"/proc/{pid}/cwd")
+        cwd = process_cwd(pid)
+        if not cwd:
+            return []
         with sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True, timeout=3) as con:
             sessions = con.execute(
                 "SELECT id, directory FROM session "

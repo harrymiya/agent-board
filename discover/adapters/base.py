@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import time
 from dataclasses import dataclass, field
 from typing import Iterable, List, Optional, Sequence, Tuple
@@ -21,9 +22,12 @@ class ProcessInfo:
     start_ticks: int
     boot_time: Optional[int]
     kind: str = ""
+    start_epoch_override: Optional[int] = None
 
     @property
     def start_epoch(self) -> int:
+        if self.start_epoch_override is not None:
+            return self.start_epoch_override
         if self.boot_time is None:
             return int(time.time())
         try:
@@ -141,3 +145,33 @@ def read_jsonl(path: str):
     except OSError:
         return
 
+
+def process_cwd(pid: int) -> Optional[str]:
+    """Resolve a process working directory on Linux and macOS."""
+    try:
+        if os.path.isdir("/proc"):
+            return os.readlink(f"/proc/{pid}/cwd")
+        result = subprocess.run(
+            ["lsof", "-a", "-p", str(pid), "-d", "cwd", "-Fn"],
+            capture_output=True, text=True, timeout=2, check=False,
+        )
+        for line in result.stdout.splitlines():
+            if line.startswith("n"):
+                return line[1:]
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return None
+
+
+def process_alive(pid: int) -> bool:
+    """Check liveness without assuming Linux procfs."""
+    try:
+        if os.path.isdir("/proc"):
+            with open(f"/proc/{int(pid)}/stat", encoding="utf-8", errors="replace") as fh:
+                fields = fh.read().rsplit(")", 1)[-1].split()
+            if not fields or fields[0] == "Z":
+                return False
+        os.kill(int(pid), 0)
+        return True
+    except (OSError, ProcessLookupError, ValueError, IndexError):
+        return False
