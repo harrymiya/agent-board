@@ -57,7 +57,7 @@ python3 server/agentboard_server.py
 | 平台 | 看板服务 | Agent 自动发现 | 推荐启动方式 |
 | --- | --- | --- | --- |
 | Linux | ✅ 完整支持 | ✅ `/proc` 进程扫描 | `./board.sh` |
-| macOS | ✅ 可运行 | ✅ 进程发现已支持 | `python3 server/agentboard_server.py` |
+| macOS | ✅ 可运行 | ✅ 进程发现已支持（没测试...） | `python3 server/agentboard_server.py` |
 | Windows | ✅ 可运行 | ⚠️ 暂不支持 | `py server\\agentboard_server.py` |
 
 说明：
