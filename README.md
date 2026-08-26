@@ -23,6 +23,8 @@
 
 需要：Python 3.8+ 和 `curl`。
 
+> 当前完整功能优先支持 Linux。macOS 和 Windows 可以启动看板服务，但 Agent 自动发现还未完整适配，详见下方的[平台支持](#平台支持)。
+
 ```bash
 git clone https://github.com/harrymiya/agent-board.git
 cd agent-board
@@ -49,6 +51,21 @@ cd agent-board
 ```bash
 python3 server/agentboard_server.py
 ```
+
+## 平台支持
+
+| 平台 | 看板服务 | Agent 自动发现 | 推荐启动方式 |
+| --- | --- | --- | --- |
+| Linux | ✅ 完整支持 | ✅ `/proc` 进程扫描 | `./board.sh` |
+| macOS | ✅ 可运行 | ⚠️ 暂不完整支持 | `python3 server/agentboard_server.py` |
+| Windows | ✅ 可运行 | ⚠️ 暂不支持 | `py server\\agentboard_server.py` |
+
+说明：
+
+- macOS 当前缺少基于 `ps` 的进程发现适配，且一键脚本尚未接入 `open` 命令。
+- Windows 当前没有原生 `/proc`，`board.sh` 也不是 Windows 原生脚本；Git Bash/WSL 只能提供有限兼容。
+- 在 macOS/Windows 上手动启动后，页面和 HTTP 服务可以访问，但可能看不到自动发现的 Agent。
+- 跨平台适配计划是将进程扫描抽象为平台插件：Linux 使用 `/proc`，macOS 使用 `ps`，Windows 使用 PowerShell/WMI。
 
 ## 看板里有什么？
 
