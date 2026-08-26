@@ -90,6 +90,7 @@ python3 server/agentboard_server.py \
 | `--run` / `AGENTBOARD_RUN` | 固定查看某个日期目录 | 最近日期 |
 | `--interval` / `AGENTBOARD_INTERVAL` | 刷新间隔，单位秒 | `0.2` |
 | `AGENTBOARD_AUTO_INSTALL=1` | 允许启动脚本自动安装缺失依赖 | 默认关闭 |
+| `AGENTBOARD_ADAPTERS` | 加载额外 Agent 适配器，逗号分隔的 Python 模块名 | 未设置 |
 
 例如：
 
@@ -141,11 +142,14 @@ python3 discover/hermes_board_discover.py
 python3 -m unittest discover -s tests -p 'test_*.py'
 ```
 
+Agent 适配器位于 `discover/adapters/`，每种 Agent 独立维护。第三方适配器只需暴露 `adapter` 或 `get_adapter()`，然后通过 `AGENTBOARD_ADAPTERS=your_package.adapter` 加载，无需修改核心发现流程。
+
 主要目录：
 
 ```text
 server/    HTTP/WebSocket 服务
 discover/  Agent 自动发现
+  adapters/ 各类 Agent 独立适配器
 web/       单页看板界面
 tests/     自动化测试
 ```
