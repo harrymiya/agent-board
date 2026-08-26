@@ -11,6 +11,7 @@
     --run:#26d07c; --err:#ff5c5c; --think:#c792ea; --wait:#e5c07b;
     --idle:#a4a9b0; --acc:#b9bdc2; --signal:#d85c52;
     --bg-glow:#272b30; --hdr-bg:rgba(13,15,17,.90); --card-b2:#101214;
+    --vanish-bg:rgba(0,0,0,.94);
   }
   /* 浅色主题 */
   [data-theme="light"]{
@@ -19,6 +20,7 @@
     --run:#0f9d58; --err:#e03535; --think:#8b5cf6; --wait:#c77d0a;
     --idle:#72767b; --acc:#6d7176; --signal:#b84239;
     --bg-glow:#ffffff; --hdr-bg:rgba(251,251,249,.90); --card-b2:#eeeeec;
+    --vanish-bg:rgba(255,255,255,.96);
   }
   *{box-sizing:border-box}
   *{scrollbar-width:thin;scrollbar-color:var(--muted) transparent}
@@ -110,11 +112,11 @@
     border:1px solid rgba(180,185,190,.22);border-radius:6px;
     overflow:hidden;display:flex;flex-direction:column;
     min-height:200px;max-height:240px;
-    transform-style:preserve-3d;will-change:transform,opacity,box-shadow;
+    transform-style:preserve-3d;will-change:transform,opacity;
     box-shadow:0 8px 20px rgba(0,0,0,.24),inset 0 1px rgba(255,255,255,.08);
   }
   /* 光泽划过动效已移除(用户要求): 不再有斜向高光带掠过卡片 */
-  .card:before{content:'';position:absolute;z-index:0;inset:0;pointer-events:none;opacity:0}
+  .card:before{content:'';position:absolute;z-index:4;inset:0;pointer-events:none;opacity:0;background:var(--vanish-bg)}
   /* 悬浮不再改卡片自身 transform，避免与实时 FLIP 排序动画互相抢控制权 */
   .card:after{content:'';position:absolute;z-index:0;inset:0;pointer-events:none;opacity:0;
     background:radial-gradient(240px circle at var(--mx,50%) var(--my,35%),rgba(255,255,255,.14),rgba(255,255,255,.035) 34%,transparent 68%);
@@ -127,12 +129,23 @@
   /* 卡片出现 / 消失 / 移动 的丝滑动效 */
   .card{transition:transform .45s cubic-bezier(.22,.8,.28,1),opacity .45s ease,
                     box-shadow .3s ease;will-change:transform,opacity}
-  .card.enter{animation:cardIn .45s cubic-bezier(.22,.8,.28,1)}
-  .card.leaving{pointer-events:none;opacity:0;transform:scale(.86) translateY(8px);
-                transition:opacity .28s ease,transform .28s ease}
+  .card.enter{transform-origin:left center;backface-visibility:hidden;
+               animation:cardIn .58s cubic-bezier(.22,.8,.28,1)}
+  .card.leaving{pointer-events:none;transform-origin:left center;backface-visibility:hidden;
+                animation:cardOut .56s cubic-bezier(.25,.1,.25,1) forwards}
+  .card.leaving:before{animation:cardOutShade .56s ease-in forwards}
   @keyframes cardIn{
-    from{opacity:0;transform:translateY(14px) scale(.96)}
-    to  {opacity:1;transform:translateY(0)   scale(1)}
+    from{opacity:0;filter:none;transform:rotateY(-78deg)}
+    to  {opacity:1;filter:none;transform:rotateY(0deg)}
+  }
+  @keyframes cardOut{
+    from{opacity:1;filter:none;transform:rotateY(0deg)}
+    to  {opacity:0;filter:none;transform:rotateY(78deg)}
+  }
+  @keyframes cardOutShade{
+    0%  {opacity:0}
+    35% {opacity:.16}
+    100%{opacity:1}
   }
   /* 状态仅通过头部底色淡染区分(不再给卡片底边/彩色边框) */
   .card.x-run .c-head{background:linear-gradient(90deg,rgba(38,208,124,.10),transparent 68%)}
@@ -469,14 +482,18 @@ function render(d){
   [...prev.values()].forEach(el=>oldRects.set(el.dataset.agent, el.getBoundingClientRect()));
   const newSet = new Set(active.map(a=>a.agent));
 
-  // 1) 消失的卡: 保留在原位播放退场动效, 动画结束后自移除
+  // 1) 消失的卡: 保留在原位播放退场动效, 动画结束后自移除。
+  //    退场期间暂停本轮网格重排，避免后续纵向行提前上移。
+  let startedLeaving=false;
   prev.forEach((el,id)=>{ if(!newSet.has(id)){
+    if(el.classList.contains('leaving')) return;
     el.classList.add('leaving');
+    startedLeaving=true;
     const rm=()=>el.remove();
-    el.addEventListener('transitionend',rm,{once:true});
-    el.addEventListener('animationend',rm,{once:true});
-    setTimeout(rm,520); // 兜底
+    el.addEventListener('animationend',e=>{if(e.animationName==='cardOut')rm()});
+    setTimeout(rm,720); // reduced-motion 或动画中断时兜底
   }});
+  if(startedLeaving || grid.querySelector('.card.leaving')) return;
 
   // 2) 清除旧分隔线
   grid.querySelectorAll('.type-sep').forEach(el=>el.remove());
