@@ -150,5 +150,123 @@ class AdapterRegistryTest(unittest.TestCase):
         self.assertEqual(processes[0].start_epoch_override, parse_ps_line(result.stdout)[3])
 
 
+from discover.adapters.hermes import HermesAdapter, _subagent_label, _think
+from discover.adapters.base import DiscoveryContext
+
+
+class HermesSubAgentTest(unittest.TestCase):
+    """Hermes sub-agent (source='subagent') sessions should appear as their own
+    virtual cards, distinct from the parent CLI session card."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db = os.path.join(self.tmp.name, "state.db")
+        con = sqlite3.connect(self.db)
+        con.execute(
+            "CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT, cwd TEXT, model TEXT, "
+            "started_at REAL, last_activity_at REAL, ended_at REAL, title TEXT, "
+            "git_repo_root TEXT, parent_session_id TEXT)"
+        )
+        con.execute(
+            "CREATE TABLE messages (session_id TEXT, role TEXT, content TEXT, "
+            "reasoning TEXT, reasoning_content TEXT, timestamp REAL)"
+        )
+        now = time.time()
+        con.execute(
+            "INSERT INTO sessions VALUES (?,?,?,?,?,?,?,?,?,?)",
+            ("20260826_000000_abc123", "cli", "/mnt/data/code", "dsv4",
+             now - 3600, now - 10, None, "主任务", "", None),
+        )
+        con.execute(
+            "INSERT INTO sessions VALUES (?,?,?,?,?,?,?,?,?,?)",
+            ("20260826_000100_def456", "subagent", "/mnt/data/code", "dsv4",
+             now - 600, now - 5, None, None, "", "20260826_000000_abc123"),
+        )
+        con.execute(
+            "INSERT INTO sessions VALUES (?,?,?,?,?,?,?,?,?,?)",
+            ("20260826_000200_ghi789", "subagent", "/mnt/data/code", "dsv4",
+             now - 600, now - 5, now - 3, None, "", "20260826_000000_abc123"),
+        )
+        con.execute(
+            "INSERT INTO messages VALUES (?,?,?,?,?,?)",
+            ("20260826_000100_def456", "user", "请把 X 数据处理成 Y 格式并落库",
+             None, None, now - 590),
+        )
+        con.execute(
+            "INSERT INTO messages VALUES (?,?,?,?,?,?)",
+            ("20260826_000100_def456", "assistant", "", "我在思考第一步如何做",
+             None, now - 20),
+        )
+        con.commit()
+        con.close()
+        import discover.adapters.hermes as hermes_mod
+        self.hermes_mod = hermes_mod
+        self.original_state_db = hermes_mod.STATE_DB
+        hermes_mod.STATE_DB = self.db
+
+    def tearDown(self):
+        self.hermes_mod.STATE_DB = self.original_state_db
+        self.tmp.cleanup()
+
+    def test_active_subagent_gets_own_card(self):
+        out_dir = os.path.join(self.tmp.name, "out")
+        os.makedirs(out_dir, exist_ok=True)
+        context = DiscoveryContext(self.tmp.name, "20260826", out_dir)
+        count = HermesAdapter().discover(context, [])
+        files = set(os.listdir(out_dir))
+        # parent and active sub-agent cards; ended sub-agent excluded
+        self.assertEqual(count, 2)
+        self.assertIn("hermes-abc123.pid", files)
+        self.assertIn("hermes-sub-def456.pid", files)
+        self.assertNotIn("hermes-sub-ghi789.pid", files)
+        self.assertTrue(os.path.isfile(os.path.join(out_dir, "hermes-sub-def456.think")))
+        with open(os.path.join(out_dir, "hermes-sub-def456.think"),
+                  encoding="utf-8") as fh:
+            think = fh.read()
+        self.assertIn("我在思考第一步如何做", think)
+
+    def test_subagent_label_from_first_user_message(self):
+        con = sqlite3.connect(self.db)
+        label = _subagent_label(con, "20260826_000100_def456", "/mnt/data/code", "def456")
+        con.close()
+        self.assertEqual(label, "请把 X 数据处理成 Y 格式并落库")
+
+
+class PrimeTimestampParseTest(unittest.TestCase):
+    """prime parse_session must handle ISO and epoch timestamps (was float() on
+    ISO strings -> all think/status timestamps came back empty, which broke the
+    board's "recent think -> running" freshness check)."""
+
+    def test_iso_timestamp_parses(self):
+        from discover.adapters.prime import _ts_to_epoch, _ts_hms
+        epoch = _ts_to_epoch("2026-08-26T04:19:57.717Z")
+        self.assertIsNotNone(epoch)
+        self.assertAlmostEqual(epoch, 1787717997.717, delta=1.5)
+        self.assertRegex(_ts_hms("2026-08-26T04:19:57.717Z"), r"^\d{2}:\d{2}:\d{2}$")
+
+    def test_epoch_and_millis_parse(self):
+        from discover.adapters.prime import _ts_to_epoch
+        self.assertAlmostEqual(_ts_to_epoch(1787717995.7), 1787717995.7)
+        # milliseconds epoch
+        self.assertAlmostEqual(_ts_to_epoch(1787717995457), 1787717995.457, delta=1.5)
+
+    def test_assistant_message_timestamp_populated_in_think(self):
+        import json
+        from discover.adapters.prime import parse_session
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".jsonl", delete=False) as fh:
+            fh.write('{"type":"session","id":"s1","timestamp":"2026-08-26T04:19:42.138Z"}\n')
+            fh.write('{"type":"message","timestamp":"2026-08-26T04:19:57.717Z",'
+                     '"message":{"role":"assistant","content":[{"type":"text","text":"hello thought"}]}}\n')
+            name = fh.name
+        try:
+            info = parse_session(name)
+        finally:
+            os.unlink(name)
+        self.assertEqual(len(info["think"]), 1)
+        hms, text = info["think"][0]
+        self.assertEqual(text, "hello thought")
+        self.assertRegex(hms, r"^\d{2}:\d{2}:\d{2}$")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -50,6 +50,43 @@ def _message_text(event):
     return content.strip() if isinstance(content, str) else ""
 
 
+def _ts_to_epoch(value):
+    """Normalize a session-event timestamp to seconds-epoch (float) or None."""
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        number = float(value)
+        return number / 1000.0 if number > 10_000_000_000 else number
+    raw = str(value).strip()
+    if not raw:
+        return None
+    try:
+        number = float(raw)
+        return number / 1000.0 if number > 10_000_000_000 else number
+    except ValueError:
+        pass
+    text = raw.replace("Z", "+00:00")
+    try:
+        from datetime import datetime
+        parsed = datetime.fromisoformat(text)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=datetime.now().astimezone().tzinfo)
+        return parsed.timestamp()
+    except ValueError:
+        return None
+
+
+def _ts_hms(value):
+    """Format a session-event timestamp as HH:MM:SS ('' when unparseable)."""
+    epoch = _ts_to_epoch(value)
+    if epoch is None:
+        return ""
+    try:
+        return time.strftime("%H:%M:%S", time.localtime(epoch))
+    except (OverflowError, OSError, ValueError):
+        return ""
+
+
 def parse_session(path):
     info = {"session_id": "", "start": None, "task": "", "think": [],
             "task_state": "", "last_hms": ""}
@@ -59,10 +96,7 @@ def parse_session(path):
         if event_type == "session":
             info["session_id"] = event.get("id") or info["session_id"]
             if info["start"] is None:
-                try:
-                    info["start"] = float(event.get("timestamp") or 0)
-                except (TypeError, ValueError):
-                    pass
+                info["start"] = _ts_to_epoch(event.get("timestamp"))
         elif event_type == "custom_message":
             content = event.get("content") or ""
             if "[task from parent]" in content and not info["task"]:
@@ -71,19 +105,13 @@ def parse_session(path):
             state = (event.get("status") or {}).get("taskState") or ""
             if state:
                 info["task_state"] = str(state).strip().lower()
-            try:
-                info["last_hms"] = time.strftime("%H:%M:%S", time.localtime(float(event.get("timestamp"))))
-            except (TypeError, ValueError, OverflowError):
-                pass
+            info["last_hms"] = _ts_hms(event.get("timestamp"))
         elif event_type == "message" and (event.get("message") or {}).get("role") == "assistant":
             text = _message_text(event)
             if not text:
                 continue
-            try:
-                stamp = float(event.get("timestamp") or 0)
-                hms = time.strftime("%H:%M:%S", time.localtime(stamp))
-            except (TypeError, ValueError, OverflowError):
-                stamp, hms = 0, ""
+            stamp = _ts_to_epoch(event.get("timestamp")) or 0.0
+            hms = _ts_hms(event.get("timestamp"))
             messages.append((stamp, hms, text))
     info["think"] = [(hms, text) for _, hms, text in sorted(messages)[-5:][::-1]]
     return info
