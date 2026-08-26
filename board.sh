@@ -14,9 +14,10 @@
 #   AGENTBOARD_PORT   端口 (默认 8710)
 #   AGENTBOARD_ROOT   数据根目录 (默认 ~/.hermes/agent-board)
 #   SRV_PY            服务端脚本路径 (默认本仓库 server/agentboard_server.py)
-#   SKIP_AUTO_INSTALL 1 时只检测/提示缺失依赖, 不自动安装 (默认自动安装)
+#   AGENTBOARD_AUTO_INSTALL=1 时允许脚本安装缺失依赖 (默认只提示)
 #
-# 依赖: python3 (>=3.8) + curl, 缺少时自动用 apt/dnf/yum/apk/brew 安装。
+# 依赖: python3 (>=3.8) + curl。默认只检测并提示；设置
+# AGENTBOARD_AUTO_INSTALL=1 后才会尝试用 apt/dnf/yum/apk/brew 安装。
 # 优先用 systemd 用户服务 (agentboard.service, 开机自启);
 # 无 systemd 时回退为 nohup 后台进程, 保证任何机器上都能一键。
 set -u
@@ -24,6 +25,7 @@ set -u
 SRV_PY="${SRV_PY:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/server/agentboard_server.py}"
 PORT="${AGENTBOARD_PORT:-8710}"
 ROOT="${AGENTBOARD_ROOT:-$HOME/.hermes/agent-board}"
+PID_FILE="$ROOT/server.pid"
 URL="http://127.0.0.1:$PORT"
 SERVICE="agentboard.service"
 
@@ -35,11 +37,20 @@ is_up() { curl -s -o /dev/null -m 2 -w '%{http_code}' "$URL/" 2>/dev/null | grep
 # systemd 用户服务是否可用
 has_systemd() { command -v systemctl >/dev/null 2>&1 && systemctl --user list-unit-files "$SERVICE" >/dev/null 2>&1; }
 
+server_pid() {
+    local pid=""
+    [ -f "$PID_FILE" ] || return 1
+    read -r pid <"$PID_FILE" || return 1
+    [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+    kill -0 "$pid" 2>/dev/null || return 1
+    ps -p "$pid" -o args= 2>/dev/null | grep -F -- "$SRV_PY" >/dev/null || return 1
+    printf '%s\n' "$pid"
+}
+
 # ---------------------------------------------------------------------------
 # 依赖检测 / 自动安装
 #   运行所需的仅两个: python3 (>=3.8, 服务端与 discover 用) + curl (健康检查用)。
-#   缺了会尝试用 apt/dnf/yum/apk/brew 自动安装(装完复查), 失败则提示手动装。
-#   环境变量 SKIP_AUTO_INSTALL=1 可关闭自动安装, 只报告缺失。
+#   默认只检测并提示缺失依赖；AGENTBOARD_AUTO_INSTALL=1 才允许自动安装。
 # ---------------------------------------------------------------------------
 pkg_mgr() {
     command -v apt-get >/dev/null 2>&1 && { echo apt; return; }
@@ -60,8 +71,10 @@ have_curl() { command -v curl >/dev/null 2>&1; }
 install_pkgs() {
     local mgr; mgr=$(pkg_mgr)
     [ -z "$mgr" ] && { say "未找到包管理器 (apt/dnf/yum/apk/brew), 请手动安装: $*" >&2; return 1; }
-    [ "${SKIP_AUTO_INSTALL:-0}" = "1" ] && {
-        say "SKIP_AUTO_INSTALL=1, 跳过自动安装, 请手动安装: $*" >&2; return 1; }
+    [ "${AGENTBOARD_AUTO_INSTALL:-0}" != "1" ] && {
+        say "缺少依赖: $*。如需自动安装，请设置 AGENTBOARD_AUTO_INSTALL=1；否则请手动安装。" >&2
+        return 1
+    }
     local SUDO=""
     [ "$(id -u 2>/dev/null)" != "0" ] && SUDO="sudo"
     say "检测到包管理器 $mgr, 正在安装: $* ..."
@@ -105,6 +118,8 @@ do_start() {
         mkdir -p "$ROOT"
         nohup python3 "$SRV_PY" --port "$PORT" --root "$ROOT" \
             >>"$ROOT/server.log" 2>&1 &
+        local pid=$!
+        printf '%s\n' "$pid" >"$PID_FILE"
         disown 2>/dev/null || true
     fi
     # 等待就绪(最多 25 秒)
@@ -120,7 +135,24 @@ do_stop() {
     if has_systemd; then
         systemctl --user stop "$SERVICE" 2>&1
     else
-        pkill -f "$SRV_PY" 2>/dev/null && say "已停止" || say "未在运行"
+        local pid=""
+        pid=$(server_pid 2>/dev/null || true)
+        if [ -n "$pid" ]; then
+            kill "$pid" 2>/dev/null || true
+            for _ in $(seq 1 20); do
+                kill -0 "$pid" 2>/dev/null || break
+                sleep 0.1
+            done
+            rm -f "$PID_FILE"
+            if kill -0 "$pid" 2>/dev/null; then
+                say "停止超时，进程仍在运行: $pid" >&2
+                return 1
+            fi
+            say "已停止"
+        else
+            rm -f "$PID_FILE"
+            say "未在运行"
+        fi
     fi
 }
 
