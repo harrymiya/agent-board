@@ -485,6 +485,10 @@ def _prime_subagents():
                         pass
                 # 归属的父 daemon pid: 仅作为诊断信息保留，卡片本身使用虚拟 PID。
                 parent_pid = _prime_pid_for_session(parent)
+                # 父会话没有在跑的 daemon 属主(已关闭/历史任务) → 不再复现它的历史子卡。
+                # 否则“关闭了 prime 却仍是一整行 prime 子卡”会一直出现。
+                if parent_pid is None or not _pid_alive(parent_pid):
+                    continue
                 short = info["session_id"][-8:]
                 # 状态归一: 已完成→done; 等待输入→waiting; 其余→running
                 meta_status = str(meta_status or "").strip().lower()
@@ -510,6 +514,22 @@ def _prime_subagents():
     except Exception:
         pass
     return out
+
+
+def _pid_alive(pid):
+    """判断某 pid 是否仍是存活进程(非僵尸)。"""
+    if not pid:
+        return False
+    try:
+        with open(f"/proc/{int(pid)}/stat", encoding="utf-8", errors="replace") as fh:
+            st = fh.read()
+        after = st.rsplit(")", 1)[-1].split()
+        if not after or after[0] == "Z":
+            return False
+        os.kill(int(pid), 0)
+        return True
+    except (OSError, ProcessLookupError, ValueError, IndexError):
+        return False
 
 
 def _prime_pid_for_session(session_id_prefix):
